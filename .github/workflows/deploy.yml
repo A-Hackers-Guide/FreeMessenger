@@ -1,0 +1,54 @@
+# Deploys the relay to Cloudflare and the web app to GitHub Pages on every push to main.
+# Once deployed, both keep running on their own; this only runs again when you push.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: relay
+
+  pages:
+    needs: relay
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Point the web app at the relay
+        env:
+          # Set a RELAY_URL repository variable to use a custom domain instead.
+          RELAY_URL: ${{ vars.RELAY_URL || needs.relay.outputs.url }}
+        run: |
+          test -n "$RELAY_URL" || { echo "No relay URL from the Cloudflare deploy"; exit 1; }
+          printf 'export const RELAY_URL = %s;\n' "\"${RELAY_URL%/}\"" > client/config.js
+          cat client/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: client
+      - id: pages
+        uses: actions/deploy-pages@v4

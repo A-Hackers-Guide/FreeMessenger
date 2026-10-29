@@ -1,0 +1,17 @@
+name = "freemessenger-relay"
+main = "src/index.js"
+# Pinned on purpose: Cloudflare keeps old compatibility dates working forever,
+# so this Worker never needs updating to keep running.
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "USERS"
+class_name = "User"
+
+# SQLite-backed Durable Objects are available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["User"]
+
+# Optional: Cloudflare TURN for calls through strict firewalls.
+# Set with:  npx wrangler secret put TURN_KEY_ID  /  TURN_KEY_API_TOKEN

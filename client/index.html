@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FreeMessenger</title>
+  <meta name="description" content="Free messaging, voice and video calls in any web browser. Your username is your number.">
+  <meta name="theme-color" content="#2f6fed">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M8 10h16v10H14l-6 4z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div id="welcome" hidden>
+    <div class="card">
+      <div class="logo" aria-hidden="true"></div>
+      <h1>FreeMessenger</h1>
+      <p class="lede">Free texting, voice and video calls in any web browser. Your username is your phone number.</p>
+      <p id="invite-note" class="invite"></p>
+      <form id="signup-form">
+        <label for="signup-name">Pick a username</label>
+        <div class="handle">
+          <span>@</span>
+          <input id="signup-name" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="20" placeholder="yourname" required>
+        </div>
+        <button type="submit" class="primary">Create account</button>
+        <p id="signup-error" class="error" role="alert"></p>
+      </form>
+      <div class="divider"><span>or</span></div>
+      <button id="import-btn" class="ghost">Restore from a backup file</button>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
+      <p class="fine">No email, no phone number, no password. Messages are end-to-end encrypted.</p>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <aside id="sidebar">
+      <header class="bar">
+        <div class="me"><span id="conn" class="dot off" title="Connecting…"></span><strong id="me-name"></strong></div>
+        <button id="menu-btn" class="icon" aria-label="Menu">
+          <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <div id="menu" class="menu" hidden>
+          <button id="share-btn">Share my link</button>
+          <button id="backup-btn">Download backup</button>
+          <button id="notify-btn">Turn on notifications</button>
+          <button id="logout-btn" class="danger-text">Sign out of this browser</button>
+        </div>
+      </header>
+      <div id="backup-banner" class="banner" hidden>
+        <p><strong>Save your backup file.</strong> It's the only way to get your account back on a new browser.</p>
+        <button id="banner-backup-btn" class="primary small">Download backup</button>
+      </div>
+      <form id="add-form" class="add">
+        <span>@</span>
+        <input id="add-name" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="21" placeholder="Message a username">
+        <button type="submit" class="primary small">Go</button>
+      </form>
+      <p id="add-error" class="error add-error" role="alert"></p>
+      <ul id="contacts"></ul>
+      <p id="contacts-empty" class="hint">Type a friend's username above to start chatting.</p>
+    </aside>
+
+    <main id="chat">
+      <div id="empty" class="hint center">Pick a chat, or type a username to start one.</div>
+      <section id="convo" hidden>
+        <header class="bar">
+          <button id="back-btn" class="icon back" aria-label="Back">
+            <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="peer">
+            <strong id="peer-name"></strong>
+            <button id="safety-btn" class="link">Verify encryption</button>
+          </div>
+          <button id="voice-btn" class="icon" aria-label="Voice call" title="Voice call">
+            <svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 006.6 6.6l2.2-2.2a1 1 0 011-.25 11.4 11.4 0 003.6.57 1 1 0 011 1V20a1 1 0 01-1 1A17 17 0 013 4a1 1 0 011-1h3.5a1 1 0 011 1c0 1.25.2 2.45.57 3.57a1 1 0 01-.25 1z"/></svg>
+          </button>
+          <button id="video-btn" class="icon" aria-label="Video call" title="Video call">
+            <svg viewBox="0 0 24 24"><path d="M4 6h11a2 2 0 012 2v1.5l4-2.5v10l-4-2.5V16a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z"/></svg>
+          </button>
+        </header>
+        <ol id="messages"></ol>
+        <form id="send-form" class="composer">
+          <textarea id="send-text" rows="1" placeholder="Message" maxlength="8000"></textarea>
+          <button type="submit" class="primary">Send</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div id="call" hidden>
+    <video id="remote-video" autoplay playsinline></video>
+    <div class="call-avatar" id="call-avatar"></div>
+    <video id="local-video" autoplay playsinline muted></video>
+    <div class="call-info">
+      <strong id="call-peer"></strong>
+      <span id="call-status"></span>
+    </div>
+    <div class="call-controls">
+      <button id="accept-btn" class="accept">Accept</button>
+      <button id="mute-btn" class="round">Mute</button>
+      <button id="cam-btn" class="round">Camera off</button>
+      <button id="hangup-btn" class="hangup">End</button>
+    </div>
+  </div>
+
+  <dialog id="safety-dialog">
+    <h2>Verify encryption with <span id="safety-peer"></span></h2>
+    <p>Compare this code with your friend in person or on a call. If yours match, nobody can read your messages, not even the relay.</p>
+    <p id="safety-code" class="code"></p>
+    <button id="safety-close" class="primary">Done</button>
+  </dialog>
+
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
