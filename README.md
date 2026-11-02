@@ -1,5 +1,8 @@
 # FreeMessenger
 
+[![Download FreeMessenger](https://img.shields.io/sourceforge/dt/ahg-freemessenger.svg?label=SourceForge%20downloads)](https://sourceforge.net/projects/ahg-freemessenger/files/latest/download) [![Download FreeMessenger](https://a.fsdn.com/con/app/sf-download-button)](https://sourceforge.net/projects/ahg-freemessenger/files/latest/download)
+
+
 **Free texting, voice calls and video calls in any web browser. Your username is your phone number.**
 
 ### 👉 [Open FreeMessenger](https://a-hackers-guide.github.io/FreeMessenger/)
