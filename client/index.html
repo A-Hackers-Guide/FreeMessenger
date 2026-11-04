@@ -8,6 +8,9 @@
   <meta name="theme-color" content="#2f6fed">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M8 10h16v10H14l-6 4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <script src="app.min.js" defer></script>
 </head>
 <body>
@@ -54,14 +57,19 @@
         </button>
         <div id="menu" class="menu" hidden>
           <button id="share-btn">Share my link</button>
+          <button id="new-group-btn">New group</button>
+          <button id="settings-btn">Settings</button>
           <button id="backup-btn">Download backup</button>
-          <button id="notify-btn">Turn on notifications</button>
+          <button id="install-btn" hidden>Install app</button>
           <button id="logout-btn" class="danger-text">Sign out of this browser</button>
         </div>
       </header>
       <div id="backup-banner" class="banner" hidden>
         <p><strong>Save your backup file.</strong> It's the only way to get your account back on a new browser.</p>
         <button id="banner-backup-btn" class="primary small">Download backup</button>
+      </div>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Search chats and messages" aria-label="Search chats and messages">
       </div>
       <form id="add-form" class="add">
         <span>@</span>
@@ -70,6 +78,7 @@
       </form>
       <p id="add-error" class="error add-error" role="alert"></p>
       <ul id="contacts"></ul>
+      <ul id="results" hidden></ul>
       <p id="contacts-empty" class="hint">Type a friend's username above to start chatting.</p>
     </aside>
 
@@ -82,7 +91,9 @@
           </button>
           <div class="peer">
             <strong id="peer-name"></strong>
+            <span id="peer-typing" class="typing" hidden></span>
             <button id="safety-btn" class="link">Verify encryption</button>
+            <button id="members-btn" class="link" hidden></button>
           </div>
           <button id="voice-btn" class="icon" aria-label="Voice call" title="Voice call">
             <svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 006.6 6.6l2.2-2.2a1 1 0 011-.25 11.4 11.4 0 003.6.57 1 1 0 011 1V20a1 1 0 01-1 1A17 17 0 013 4a1 1 0 011-1h3.5a1 1 0 011 1c0 1.25.2 2.45.57 3.57a1 1 0 01-.25 1z"/></svg>
@@ -90,11 +101,36 @@
           <button id="video-btn" class="icon" aria-label="Video call" title="Video call">
             <svg viewBox="0 0 24 24"><path d="M4 6h11a2 2 0 012 2v1.5l4-2.5v10l-4-2.5V16a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z"/></svg>
           </button>
+          <button id="chat-menu-btn" class="icon" aria-label="Chat options" title="Chat options">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          </button>
+          <div id="chat-menu" class="menu" hidden></div>
         </header>
+        <div id="chat-search-bar" class="subbar" hidden>
+          <input id="chat-search" type="search" placeholder="Search this chat" aria-label="Search this chat">
+          <span id="chat-search-count"></span>
+          <button id="chat-search-close" class="icon small-icon" aria-label="Close search">✕</button>
+        </div>
         <ol id="messages"></ol>
+        <div id="draft-bar" class="subbar draft" hidden>
+          <div><strong id="draft-title"></strong><span id="draft-text"></span></div>
+          <button id="draft-cancel" class="icon small-icon" aria-label="Cancel">✕</button>
+        </div>
+        <div id="record-bar" class="subbar recording" hidden>
+          <span class="rec-dot"></span><span id="record-time">0:00</span><span class="grow">Recording a voice message</span>
+          <button id="record-cancel" class="ghost small">Cancel</button>
+          <button id="record-send" class="primary small">Send</button>
+        </div>
         <form id="send-form" class="composer">
+          <button type="button" id="attach-btn" class="icon" aria-label="Send a photo or file" title="Send a photo or file">
+            <svg viewBox="0 0 24 24"><path d="M16.5 6.5l-7.8 7.8a2 2 0 002.8 2.8l7.8-7.8a4 4 0 00-5.7-5.7l-7.8 7.8a6 6 0 008.5 8.5l6.4-6.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <input type="file" id="attach-file" multiple hidden>
           <textarea id="send-text" rows="1" placeholder="Message" maxlength="8000"></textarea>
-          <button type="submit" class="primary">Send</button>
+          <button type="button" id="mic-btn" class="icon" aria-label="Record a voice message" title="Record a voice message">
+            <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-2.1a7 7 0 006-6.9h-2z"/></svg>
+          </button>
+          <button type="submit" id="send-btn" class="primary">Send</button>
         </form>
       </section>
     </main>
@@ -112,6 +148,8 @@
       <button id="accept-btn" class="accept">Accept</button>
       <button id="mute-btn" class="round">Mute</button>
       <button id="cam-btn" class="round">Camera off</button>
+      <button id="flip-btn" class="round" hidden>Flip camera</button>
+      <button id="screen-btn" class="round" hidden>Share screen</button>
       <button id="hangup-btn" class="hangup">End</button>
     </div>
   </div>
@@ -122,6 +160,50 @@
     <p id="safety-code" class="code"></p>
     <button id="safety-close" class="primary">Done</button>
   </dialog>
+
+  <dialog id="group-dialog">
+    <form id="group-form" method="dialog">
+      <h2 id="group-dialog-title">New group</h2>
+      <label for="group-name" id="group-name-label">Group name</label>
+      <input id="group-name" maxlength="60" autocomplete="off" placeholder="Weekend plans">
+      <label for="group-members">Usernames, separated by spaces or commas</label>
+      <input id="group-members" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="@sam @alex">
+      <p id="group-error" class="error" role="alert"></p>
+      <div class="row">
+        <button type="button" id="group-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="group-submit" class="primary">Create group</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <h2>Settings</h2>
+    <label class="setting"><span>Theme</span>
+      <select id="set-theme"><option value="system">Match my device</option><option value="light">Light</option><option value="dark">Dark</option></select>
+    </label>
+    <label class="setting"><span>Text size</span>
+      <select id="set-size"><option value="small">Small</option><option value="normal">Normal</option><option value="large">Large</option><option value="xlarge">Extra large</option></select>
+    </label>
+    <label class="setting"><span>Enter key sends the message</span><input type="checkbox" id="set-enter"></label>
+    <label class="setting"><span>Let people see when I've read their messages</span><input type="checkbox" id="set-receipts"></label>
+    <label class="setting"><span>Let people see when I'm typing</span><input type="checkbox" id="set-typing"></label>
+    <label class="setting"><span>Notifications</span><button type="button" id="notify-btn" class="ghost small">Turn on</button></label>
+    <label class="setting"><span>Save a copy of all my chats</span><button type="button" id="export-btn" class="ghost small">Export</button></label>
+    <button id="settings-close" class="primary">Done</button>
+  </dialog>
+
+  <div id="viewer" hidden>
+    <img id="viewer-img" alt="">
+    <div class="viewer-bar">
+      <a id="viewer-save" class="round" download>Save</a>
+      <button id="viewer-close" class="round">Close</button>
+    </div>
+  </div>
+
+  <div id="msg-menu" class="menu msg-menu" hidden>
+    <div class="reactions" id="msg-reactions"></div>
+    <div id="msg-actions"></div>
+  </div>
 
   <div id="toast" role="status" hidden></div>
 </body>
