@@ -50,6 +50,15 @@ jobs:
           test -n "$RELAY_URL" || { echo "No relay URL from the Cloudflare deploy"; exit 1; }
           printf 'export const RELAY_URL = %s;\n' "\"${RELAY_URL%/}\"" > client/config.js
           cat client/config.js
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build the web app for older browsers
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+          rm -rf node_modules
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

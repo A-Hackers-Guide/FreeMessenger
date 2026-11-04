@@ -3,7 +3,7 @@
 [![Download FreeMessenger](https://img.shields.io/sourceforge/dt/ahg-freemessenger.svg?label=SourceForge%20downloads)](https://sourceforge.net/projects/ahg-freemessenger/files/latest/download) [![Download FreeMessenger](https://a.fsdn.com/con/app/sf-download-button)](https://sourceforge.net/projects/ahg-freemessenger/files/latest/download)
 
 
-**Free texting, voice calls and video calls in any web browser. Your username is your phone number.**
+**Free texting, voice calls and video calls in any web browser. Your username works like a phone number.**
 
 ### 👉 [Open FreeMessenger](https://a-hackers-guide.github.io/FreeMessenger/)
 
@@ -57,6 +57,13 @@ Only while FreeMessenger is open in a tab. Choose **⋯ → Turn on notification
 - Both people need to have FreeMessenger open. You can't call someone who's offline.
 - Some strict networks (work, school, some mobile carriers) block direct calls. Try another Wi-Fi or mobile data.
 
+### Which browsers and networks does it work on?
+Texting works in any browser from about 2017 on (Chrome, Firefox, Safari, Edge, Samsung Internet, Opera, Brave and others), including:
+- networks that block WebSockets, like many school, work and hotel Wi-Fi networks, proxies and VPN apps. FreeMessenger notices and switches to ordinary web requests. The green dot's tooltip says "compatibility mode" when that happens.
+- pages opened through a web proxy or a plain `http://` address. Encryption still works there with a built-in library, and invite links still point at the real site.
+
+Calls need a browser that supports WebRTC and an address that starts with `https://`. Tor Browser turns WebRTC off, so it can text but not call.
+
 ### What usernames can I pick?
 3 to 20 characters using `a–z`, `0–9` and `_`. Names are first come, first served, and once taken they can't be changed or released.
 
@@ -92,14 +99,16 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 
 | Part | Folder | Runs on |
 |---|---|---|
-| Web app (plain HTML, CSS and JavaScript, no build step, no dependencies) | [`client/`](client/) | GitHub Pages |
+| Web app (plain HTML, CSS and JavaScript; the Deploy workflow bundles it for older browsers) | [`client/`](client/) | GitHub Pages |
 | Relay: username directory, sign-in check, message passing, offline inbox | [`relay/`](relay/) | Cloudflare Workers + Durable Objects (free plan) |
 
 - **Accounts:** each browser makes an ECDSA P-256 key pair (proves who you are to the relay) and an ECDH P-256 key pair (encryption). The relay stores only the public halves, one Durable Object per username.
 - **Sign-in:** when you connect, the relay sends a random challenge, and your browser signs it.
+- **Connection:** a WebSocket. If one isn't signed in within 8 seconds, or fails twice, the app switches to `POST /api/http/:name` requests (`text/plain`, so there's no CORS preflight) that poll every 1 to 15 seconds and work through almost any proxy. See [`client/transport.js`](client/transport.js).
+- **Browsers without WebCrypto** (plain `http://` pages, some older browsers) load [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) instead. They produce the same keys, signatures and ciphertext, so both kinds of browser can talk to each other.
 - **Messages:** encrypted with AES-256-GCM using a key both people derive from ECDH. The relay sets the sender's name itself, so nobody can pretend to be someone else.
 - **Calls:** WebRTC. The relay only passes the encrypted call setup between the two browsers.
-- **Code:** [`client/crypto.js`](client/crypto.js), [`client/app.js`](client/app.js), [`relay/src/index.js`](relay/src/index.js).
+- **Code:** [`client/crypto.js`](client/crypto.js), [`client/transport.js`](client/transport.js), [`client/app.js`](client/app.js), [`relay/src/index.js`](relay/src/index.js).
 
 </details>
 
@@ -115,8 +124,10 @@ cd relay && npm install && npx wrangler dev
 In a second terminal:
 
 ```bash
-cd client && python3 -m http.server 8080
+cd client && npm install && npm run build && python3 -m http.server 8080
 ```
+
+Run `npm run build` again after changing the client's code.
 
 Open `http://localhost:8080` in one browser and `http://127.0.0.1:8080` in another. They count as two separate people.
 

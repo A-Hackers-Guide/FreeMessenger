@@ -4,6 +4,9 @@
 // It only (1) remembers each username's public keys, (2) proves who is connected
 // by checking a signed challenge, and (3) passes encrypted envelopes along,
 // holding them for offline users until they are acknowledged.
+//
+// Clients connect with a WebSocket, or, where a proxy or filter blocks
+// WebSockets, with plain HTTPS requests that poll for new messages.
 
 const USERNAME = /^[a-z0-9_]{3,20}$/;
 const RESERVED = new Set([
@@ -13,6 +16,9 @@ const RESERVED = new Set([
 const MAX_ENVELOPE_BYTES = 64 * 1024;   // per message
 const MAX_QUEUE = 500;                  // offline messages kept per user
 const QUEUE_TTL_MS = 30 * 24 * 3600e3;  // offline messages expire after 30 days
+const SESSION_TTL_MS = 30 * 24 * 3600e3; // HTTP sign-ins last 30 days
+const MAX_SESSIONS = 20;                // per user (one per browser)
+const POLL_ONLINE_MS = 45e3;            // an HTTP client polled this recently counts as online
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -61,6 +67,15 @@ export default {
     if (m) {
       if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expected websocket" }, 426);
       return userStub(env, m[1]).fetch(request);
+    }
+
+    // POST /api/http/:name  — the WebSocket protocol over plain requests. Bodies are
+    // sent as text/plain so browsers skip the CORS preflight that some proxies break.
+    m = url.pathname.match(/^\/api\/http\/([a-z0-9_]{3,20})$/);
+    if (m && request.method === "POST") {
+      const body = await request.text();
+      if (body.length > MAX_ENVELOPE_BYTES + 4096) return json({ error: "message too large" }, 413);
+      return userStub(env, m[1]).fetch("https://do/http", { method: "POST", body }).then(withCors);
     }
 
     // GET /api/ice  -> STUN servers, plus Cloudflare TURN if configured
@@ -112,6 +127,11 @@ export class User {
     // Keep-alive pings are answered at the edge without waking this object,
     // so idle connections cost nothing.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    // HTTP clients: when one last polled, call signaling waiting for it, and
+    // open sign-in challenges. Kept in memory only; losing them is harmless.
+    this.lastPoll = 0;
+    this.ephemeral = [];
+    this.challenges = new Map();
   }
 
   async fetch(request) {
@@ -133,6 +153,12 @@ export class User {
 
     if (url.pathname === "/deliver") return this.deliver(await request.json());
 
+    if (url.pathname === "/http") {
+      let msg;
+      try { msg = JSON.parse(await request.text()); } catch { return json({ error: "bad json" }, 400); }
+      return this.http(msg || {});
+    }
+
     if (request.headers.get("Upgrade") === "websocket") {
       const profile = await this.ctx.storage.get("profile");
       if (!profile) return json({ error: "No such user" }, 404);
@@ -151,13 +177,19 @@ export class User {
     return this.ctx.getWebSockets().filter((ws) => ws.deserializeAttachment()?.authed);
   }
 
+  pollerOnline() {
+    return Date.now() - this.lastPoll < POLL_ONLINE_MS;
+  }
+
   // Called by another user's instance to hand us an envelope.
   async deliver(msg) {
     if (msg.ephemeral) {
       // Call signaling: only useful if someone is online right now.
       const live = this.authedSockets();
       for (const ws of live) ws.send(JSON.stringify({ type: "message", ...msg }));
-      return json({ delivered: live.length > 0 });
+      const polling = this.pollerOnline();
+      if (polling) this.ephemeral = [...this.ephemeral.slice(-199), msg];
+      return json({ delivered: live.length > 0 || polling });
     }
     const key = `q:${String(msg.ts).padStart(15, "0")}:${msg.id}`;
     await this.ctx.storage.put(key, msg);
@@ -196,29 +228,79 @@ export class User {
     }
 
     if (msg.type === "send") {
-      const to = String(msg.to || "").toLowerCase();
-      const reply = (r) => ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
-      if (!USERNAME.test(to)) return reply({ error: "bad recipient" });
-      if (typeof msg.body !== "string" || msg.body.length > MAX_ENVELOPE_BYTES) return reply({ error: "message too large" });
-      const profile = await this.ctx.storage.get("profile");
-      const envelope = {
-        id: crypto.randomUUID(),
-        from: profile.username,   // set by the relay, so senders can't pretend to be someone else
-        ts: Date.now(),
-        ephemeral: !!msg.ephemeral,
-        body: msg.body,
-      };
-      const res = await userStub(this.env, to).fetch("https://do/deliver", {
-        method: "POST",
-        body: JSON.stringify(envelope),
-      });
-      return reply({ id: envelope.id, ts: envelope.ts, ...(await res.json()) });
+      const r = await this.send(msg);
+      return ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
     }
 
-    if (msg.type === "ack" && Array.isArray(msg.items)) {
-      const keys = msg.items.slice(0, 500).map((i) => `q:${String(i.ts).padStart(15, "0")}:${i.id}`);
-      if (keys.length) await this.ctx.storage.delete(keys);
+    if (msg.type === "ack") await this.ack(msg.items);
+  }
+
+  async send(msg) {
+    const to = String(msg.to || "").toLowerCase();
+    if (!USERNAME.test(to)) return { error: "bad recipient" };
+    if (typeof msg.body !== "string" || msg.body.length > MAX_ENVELOPE_BYTES) return { error: "message too large" };
+    const profile = await this.ctx.storage.get("profile");
+    const envelope = {
+      id: crypto.randomUUID(),
+      from: profile.username,   // set by the relay, so senders can't pretend to be someone else
+      ts: Date.now(),
+      ephemeral: !!msg.ephemeral,
+      body: msg.body,
+    };
+    const res = await userStub(this.env, to).fetch("https://do/deliver", {
+      method: "POST",
+      body: JSON.stringify(envelope),
+    });
+    return { id: envelope.id, ts: envelope.ts, ...(await res.json()) };
+  }
+
+  async ack(items) {
+    if (!Array.isArray(items)) return;
+    const keys = items.slice(0, 500).map((i) => `q:${String(i.ts).padStart(15, "0")}:${i.id}`);
+    if (keys.length) await this.ctx.storage.delete(keys);
+  }
+
+  // The same protocol as the WebSocket, one request at a time: get a challenge,
+  // sign it for a session token, then poll, send and ack with that token.
+  async http(msg) {
+    const profile = await this.ctx.storage.get("profile");
+    if (!profile) return json({ error: "No such user" }, 404);
+    const now = Date.now();
+
+    if (msg.op === "challenge") {
+      for (const [c, ts] of this.challenges) if (now - ts > 120e3) this.challenges.delete(c);
+      const challenge = crypto.randomUUID();
+      this.challenges.set(challenge, now);
+      return json({ challenge });
     }
+
+    if (msg.op === "auth") {
+      const issued = this.challenges.get(msg.challenge);
+      this.challenges.delete(msg.challenge);
+      if (!issued || now - issued > 120e3) return json({ error: "challenge expired" }, 401);
+      if (!(await verify(profile.sigPub, msg.signature, msg.challenge))) return json({ error: "auth failed" }, 403);
+      const token = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      await this.ctx.storage.put(`s:${token}`, now);
+      const sessions = [...(await this.ctx.storage.list({ prefix: "s:" })).entries()].sort((a, b) => a[1] - b[1]);
+      const stale = sessions.filter(([, ts], i) => i < sessions.length - MAX_SESSIONS || now - ts > SESSION_TTL_MS);
+      if (stale.length) await this.ctx.storage.delete(stale.map(([k]) => k));
+      await this.trimQueue();
+      return json({ token, username: profile.username });
+    }
+
+    const created = typeof msg.token === "string" && msg.token.length === 48 && (await this.ctx.storage.get(`s:${msg.token}`));
+    if (!created || now - created > SESSION_TTL_MS) return json({ error: "session expired" }, 401);
+
+    if (msg.op === "poll") {
+      this.lastPoll = now;
+      const queued = [...(await this.ctx.storage.list({ prefix: "q:" })).values()];
+      const live = this.ephemeral.filter((m) => now - m.ts < 60e3);
+      this.ephemeral = [];
+      return json({ messages: [...queued, ...live] });
+    }
+    if (msg.op === "send") return json(await this.send(msg));
+    if (msg.op === "ack") { await this.ack(msg.items); return json({ ok: true }); }
+    return json({ error: "unknown op" }, 400);
   }
 
   webSocketClose(ws, code) {
