@@ -7,6 +7,10 @@
 //
 // Clients connect with a WebSocket, or, where a proxy or filter blocks
 // WebSockets, with plain HTTPS requests that poll for new messages.
+//
+// When someone is offline it can wake their device with a Web Push
+// notification that says only who wrote; the message itself stays encrypted
+// in the inbox until their browser picks it up.
 
 const USERNAME = /^[a-z0-9_]{3,20}$/;
 const RESERVED = new Set([
@@ -14,11 +18,15 @@ const RESERVED = new Set([
   "freemessenger", "moderator", "mod", "staff", "security", "null", "undefined",
 ]);
 const MAX_ENVELOPE_BYTES = 64 * 1024;   // per message
-const MAX_QUEUE = 500;                  // offline messages kept per user
+const MAX_QUEUE = 2000;                 // offline messages kept per user (a 10 MB file is 320 of them)
 const QUEUE_TTL_MS = 30 * 24 * 3600e3;  // offline messages expire after 30 days
 const SESSION_TTL_MS = 30 * 24 * 3600e3; // HTTP sign-ins last 30 days
 const MAX_SESSIONS = 20;                // per user (one per browser)
 const POLL_ONLINE_MS = 45e3;            // an HTTP client polled this recently counts as online
+const MAX_PUSH_SUBS = 10;               // devices per user that get notifications
+const PUSH_GAP_MS = 20e3;               // at most one message notification per user this often
+const SITE = "https://a-hackers-guide.github.io/FreeMessenger/";
+const VAPID = "vapid-keys";             // Durable Object holding the relay's push key; not a valid username
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -78,6 +86,11 @@ export default {
       return userStub(env, m[1]).fetch("https://do/http", { method: "POST", body }).then(withCors);
     }
 
+    // GET /api/vapid  -> the public key browsers need to sign up for notifications
+    if (url.pathname === "/api/vapid") {
+      return userStub(env, VAPID).fetch("https://do/vapid-public").then(withCors);
+    }
+
     // GET /api/ice  -> STUN servers, plus Cloudflare TURN if configured
     if (url.pathname === "/api/ice") return json({ iceServers: await iceServers(env) });
 
@@ -132,6 +145,8 @@ export class User {
     this.lastPoll = 0;
     this.ephemeral = [];
     this.challenges = new Map();
+    this.lastPush = 0;
+    this.sinceTrim = 0;
   }
 
   async fetch(request) {
@@ -152,6 +167,8 @@ export class User {
     }
 
     if (url.pathname === "/deliver") return this.deliver(await request.json());
+    if (url.pathname === "/vapid-public") return json({ key: (await vapidKeys(this.ctx)).publicKey });
+    if (url.pathname === "/vapid-private") return json(await vapidKeys(this.ctx));
 
     if (url.pathname === "/http") {
       let msg;
@@ -183,22 +200,72 @@ export class User {
 
   // Called by another user's instance to hand us an envelope.
   async deliver(msg) {
+    const hint = msg.hint;
+    delete msg.hint;
+    const live = this.authedSockets();
+    const online = live.length > 0 || this.pollerOnline();
     if (msg.ephemeral) {
-      // Call signaling: only useful if someone is online right now.
-      const live = this.authedSockets();
+      // Call signaling: only useful if someone is online right now. A call to
+      // someone offline becomes a "missed call" notification.
       for (const ws of live) ws.send(JSON.stringify({ type: "message", ...msg }));
-      const polling = this.pollerOnline();
-      if (polling) this.ephemeral = [...this.ephemeral.slice(-199), msg];
-      return json({ delivered: live.length > 0 || polling });
+      if (this.pollerOnline()) this.ephemeral = [...this.ephemeral.slice(-199), msg];
+      if (!online && hint === "call") this.notify({ kind: "call", from: msg.from }, true);
+      return json({ delivered: online });
     }
     const key = `q:${String(msg.ts).padStart(15, "0")}:${msg.id}`;
     await this.ctx.storage.put(key, msg);
-    await this.trimQueue();
-    for (const ws of this.authedSockets()) ws.send(JSON.stringify({ type: "message", ...msg }));
+    // Listing the whole inbox costs a read per message, so tidy it up only
+    // every 50 deliveries (and on every sign-in).
+    if (++this.sinceTrim >= 50) await this.trimQueue();
+    for (const ws of live) ws.send(JSON.stringify({ type: "message", ...msg }));
+    if (!online && hint === "msg") this.notify({ kind: "message", from: msg.from }, false);
     return json({ queued: true });
   }
 
+  // ---------- notifications ----------
+
+  async pushSubscribe(sub) {
+    const endpoint = sub && String(sub.endpoint || "");
+    const keys = sub && sub.keys;
+    if (!/^https:\/\/[^\s]{10,1000}$/.test(endpoint) || !keys || typeof keys.p256dh !== "string" || typeof keys.auth !== "string") {
+      return { error: "bad subscription" };
+    }
+    const subs = await this.ctx.storage.list({ prefix: "p:" });
+    const id = `p:${await sha256Hex(endpoint)}`;
+    if (!subs.has(id) && subs.size >= MAX_PUSH_SUBS) {
+      const oldest = [...subs.entries()].sort((a, b) => a[1].added - b[1].added)[0];
+      await this.ctx.storage.delete(oldest[0]);
+    }
+    await this.ctx.storage.put(id, { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth }, added: Date.now() });
+    return { ok: true };
+  }
+
+  async pushUnsubscribe(endpoint) {
+    await this.ctx.storage.delete(`p:${await sha256Hex(String(endpoint || ""))}`);
+    return { ok: true };
+  }
+
+  notify(data, urgent) {
+    const now = Date.now();
+    if (!urgent && now - this.lastPush < PUSH_GAP_MS) return;
+    this.lastPush = now;
+    const work = (async () => {
+      const subs = await this.ctx.storage.list({ prefix: "p:" });
+      if (!subs.size) return;
+      const vapid = await (await userStub(this.env, VAPID).fetch("https://do/vapid-private")).json();
+      const body = new TextEncoder().encode(JSON.stringify(data));
+      await Promise.all([...subs.entries()].map(async ([k, sub]) => {
+        try {
+          const r = await sendPush(sub, body, vapid, urgent ? 60 : 86400);
+          if (r.status === 404 || r.status === 410) await this.ctx.storage.delete(k);
+        } catch {}
+      }));
+    })();
+    if (this.ctx.waitUntil) this.ctx.waitUntil(work);
+  }
+
   async trimQueue() {
+    this.sinceTrim = 0;
     const all = await this.ctx.storage.list({ prefix: "q:" });
     const keys = [...all.keys()];
     const cutoff = Date.now() - QUEUE_TTL_MS;
@@ -231,6 +298,10 @@ export class User {
       const r = await this.send(msg);
       return ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
     }
+    if (msg.type === "push-sub" || msg.type === "push-unsub") {
+      const r = msg.type === "push-sub" ? await this.pushSubscribe(msg.sub) : await this.pushUnsubscribe(msg.endpoint);
+      return ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
+    }
 
     if (msg.type === "ack") await this.ack(msg.items);
   }
@@ -247,9 +318,10 @@ export class User {
       ephemeral: !!msg.ephemeral,
       body: msg.body,
     };
+    const hint = msg.hint === "msg" || msg.hint === "call" ? msg.hint : undefined;
     const res = await userStub(this.env, to).fetch("https://do/deliver", {
       method: "POST",
-      body: JSON.stringify(envelope),
+      body: JSON.stringify({ ...envelope, hint }),
     });
     return { id: envelope.id, ts: envelope.ts, ...(await res.json()) };
   }
@@ -293,13 +365,20 @@ export class User {
 
     if (msg.op === "poll") {
       this.lastPoll = now;
-      const queued = [...(await this.ctx.storage.list({ prefix: "q:" })).values()];
+      // "after" is the newest message this client already has, so big files
+      // aren't sent again on every poll while they're being put together.
+      const a = msg.after;
+      const startAfter = a && Number.isFinite(a.ts) && typeof a.id === "string"
+        ? `q:${String(a.ts).padStart(15, "0")}:${a.id}` : undefined;
+      const queued = [...(await this.ctx.storage.list({ prefix: "q:", startAfter, limit: 200 })).values()];
       const live = this.ephemeral.filter((m) => now - m.ts < 60e3);
       this.ephemeral = [];
       return json({ messages: [...queued, ...live] });
     }
     if (msg.op === "send") return json(await this.send(msg));
     if (msg.op === "ack") { await this.ack(msg.items); return json({ ok: true }); }
+    if (msg.op === "push-sub") return json(await this.pushSubscribe(msg.sub));
+    if (msg.op === "push-unsub") return json(await this.pushUnsubscribe(msg.endpoint));
     return json({ error: "unknown op" }, 400);
   }
 
@@ -320,4 +399,77 @@ async function verify(jwk, signatureB64, challenge) {
   } catch {
     return false;
   }
+}
+
+// ---------- Web Push (RFC 8291 encryption, RFC 8292 VAPID) ----------
+
+const enc = new TextEncoder();
+const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const concat = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let i = 0;
+  for (const p of parts) { out.set(p, i); i += p.length; }
+  return out;
+};
+
+async function sha256Hex(text) {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(text)));
+  return [...h.slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// The relay's own push key, made the first time it's needed and kept in
+// storage, so there's no secret to set up.
+async function vapidKeys(ctx) {
+  let k = await ctx.storage.get("vapid");
+  if (!k) {
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    k = {
+      publicKey: b64u(await crypto.subtle.exportKey("raw", pair.publicKey)),
+      privateJwk: await crypto.subtle.exportKey("jwk", pair.privateKey),
+    };
+    await ctx.storage.put("vapid", k);
+  }
+  return k;
+}
+
+async function hkdf(salt, ikm, info, bytes) {
+  const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, bytes * 8));
+}
+
+async function sendPush(sub, payload, vapid, ttl) {
+  // Encrypt the payload for this browser (aes128gcm content encoding).
+  const uaPublic = unb64u(sub.keys.p256dh);
+  const auth = unb64u(sub.keys.auth);
+  const local = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPublic = new Uint8Array(await crypto.subtle.exportKey("raw", local.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, local.privateKey, 256));
+  const ikm = await hkdf(auth, shared, concat(enc.encode("WebPush: info\0"), uaPublic, asPublic), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+  const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, concat(payload, new Uint8Array([2]))));
+  const header = concat(salt, new Uint8Array([0, 0, 16, 0]), new Uint8Array([asPublic.length]), asPublic);
+
+  // Sign a VAPID token so the push service knows which server is sending.
+  const aud = new URL(sub.endpoint).origin;
+  const head = b64u(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = b64u(enc.encode(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: SITE })));
+  const signKey = await crypto.subtle.importKey("jwk", vapid.privateJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signKey, enc.encode(`${head}.${claims}`));
+
+  return fetch(sub.endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `vapid t=${head}.${claims}.${b64u(sig)}, k=${vapid.publicKey}`,
+      "Content-Encoding": "aes128gcm",
+      "Content-Type": "application/octet-stream",
+      TTL: String(ttl),
+      Urgency: "high",
+    },
+    body: concat(header, sealed),
+  });
 }

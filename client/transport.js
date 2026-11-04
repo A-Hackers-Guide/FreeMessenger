@@ -108,6 +108,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
   // ---------- HTTPS polling ----------
 
   let token = null;
+  let cursor = null;        // newest message seen, so each poll only returns newer ones
   let fastUntil = 0;
   let pollTimer = null;
   let httpRetry = 0;
@@ -137,11 +138,14 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
     if (stopped || mode !== "http") return;
     try {
       if (!token) await signIn();
-      const { messages } = await call("poll", {});
+      const { messages } = await call("poll", cursor ? { after: cursor } : {});
       httpRetry = 0;
       setReady(true);
       if (messages.length) boost(20000);
-      for (const m of messages) onMessage(Object.assign({ type: "message" }, m));
+      for (const m of messages) {
+        if (!m.ephemeral && (!cursor || m.ts > cursor.ts || (m.ts === cursor.ts && m.id > cursor.id))) cursor = { ts: m.ts, id: m.id };
+        onMessage(Object.assign({ type: "message" }, m));
+      }
     } catch (e) {
       if (stopped) return;
       if (e.message !== "session") { setReady(false); httpRetry++; }
@@ -178,16 +182,23 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
 
   // ---------- what the app uses ----------
 
-  function send(to, body, ephemeral) {
+  // hint tells the relay whether to send a notification if the other person
+  // is offline: "msg" for messages, "call" for calls, nothing for the rest.
+  function send(to, body, ephemeral, hint) {
+    return op("send", { to, body, ephemeral: !!ephemeral, hint });
+  }
+
+  // Any request to the relay, over whichever connection is up.
+  function op(type, data) {
     if (!ready) return Promise.resolve({ error: "offline" });
     if (mode === "http") {
-      boost(20000);
-      return call("send", { to, body, ephemeral: !!ephemeral }).catch((e) => ({ error: e.message }));
+      if (type === "send") boost(20000);
+      return call(type, data).catch((e) => ({ error: e.message }));
     }
     return new Promise((resolve) => {
       const ref = ++refSeq;
       pending.set(ref, resolve);
-      ws.send(JSON.stringify({ type: "send", ref, to, body, ephemeral }));
+      ws.send(JSON.stringify(Object.assign({ type, ref }, data)));
       setTimeout(() => { if (pending.delete(ref)) resolve({ error: "timeout" }); }, 15000);
     });
   }
@@ -203,6 +214,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
 
   return {
     send,
+    op,
     ack,
     boost,
     get ready() { return ready; },

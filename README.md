@@ -7,7 +7,7 @@
 
 ### 👉 [Open FreeMessenger](https://a-hackers-guide.github.io/FreeMessenger/)
 
-No app to install. No email, phone number or password. Works on phones, tablets and computers.
+No app to install (but you can). No email, phone number or password. Works on phones, tablets and computers.
 
 ---
 
@@ -18,6 +18,22 @@ No app to install. No email, phone number or password. Works on phones, tablets 
 3. **Type a friend's username** in the box and start chatting. Tap 📞 for a voice call or 🎥 for a video call.
 
 Your friend does the same thing in their own browser. That's it.
+
+### What you can do
+
+| | |
+|---|---|
+| 💬 **Chat** | Texts, replies, emoji reactions, editing and deleting (for everyone), "typing…", and Sent / Delivered / Read |
+| 📷 **Share** | Photos, videos, voice messages and any file up to 10 MB. Paste or drag them into a chat. |
+| 👥 **Groups** | Up to 32 people. Rename them, add people, or leave. |
+| 📞 **Call** | Voice and video calls, with screen sharing and front/back camera switching |
+| ⏱ **Disappearing messages** | Messages delete themselves after 1 hour, 1 day, 1 week or 30 days |
+| 🔔 **Notifications** | Even when the site is closed (on iPhone and iPad, install the app first) |
+| 📲 **Install it** | ⋯ → **Install app** puts it on your home screen or desktop. It opens even when you're offline. |
+| 🔎 **Find things** | Search all chats, or one chat. Nicknames, mute, block and clear history are in each chat's ⋮ menu. |
+| ⚙️ **Make it yours** | Light or dark theme, four text sizes, choose what Enter does, and turn read receipts or typing off |
+
+Tap any message for its options (react, reply, copy, edit, delete).
 
 **Invite a friend with a link:** open the **⋯** menu and choose **Share my link**. It looks like `https://a-hackers-guide.github.io/FreeMessenger/#sam`. Anyone who opens it can sign up and lands right in a chat with you.
 
@@ -50,12 +66,15 @@ In your browser on your device. Messages sent while you're offline wait on the r
 Restoring a backup on a new device brings back your **account**, not your old chat history.
 
 ### Will I get notified about new messages?
-Only while FreeMessenger is open in a tab. Choose **⋯ → Turn on notifications** to get alerts when that tab is in the background. Notifications with the site fully closed aren't supported yet.
+Yes, even when FreeMessenger is closed. Go to **⋯ → Settings → Notifications** and allow them. On iPhone and iPad, first install the app (Share → Add to Home Screen) and turn them on from there; Apple only allows notifications for installed web apps.
+
+Notifications only say who wrote to you. The message itself stays encrypted until FreeMessenger opens and unscrambles it.
 
 ### A call won't connect. What can I do?
 - Allow the camera and microphone when your browser asks.
 - Both people need to have FreeMessenger open. You can't call someone who's offline.
 - Some strict networks (work, school, some mobile carriers) block direct calls. Try another Wi-Fi or mobile data.
+- Calls are one-to-one for now. Groups can text, share and send voice messages, but not call.
 
 ### Which browsers and networks does it work on?
 Texting works in any browser from about 2017 on (Chrome, Firefox, Safari, Edge, Samsung Internet, Opera, Brave and others), including:
@@ -77,8 +96,10 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 | | |
 |---|---|
 | Message length | 8,000 characters |
-| Messages waiting while you're offline | Up to 500, kept for 30 days |
-| Group chats, photos and files | Not yet |
+| Photos, videos, voice messages and files | Up to 10 MB each (photos are made smaller automatically) |
+| Group size | 32 people |
+| Messages waiting while you're offline | Up to 2,000 (a big file counts as many), kept for 30 days |
+| Group calls | Not yet |
 | Phone (SMS/calling real numbers) | Not yet (see roadmap) |
 
 ---
@@ -86,9 +107,12 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 ## Roadmap
 
 1. ✅ Browser-to-browser texting, voice and video calls
-2. Installable app with notifications even when the site is closed
-3. Apps for Windows, macOS, Linux, Android and iOS
-4. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
+2. ✅ Works through proxies and filters, and in older browsers
+3. ✅ Photos, files, voice messages, groups, reactions, replies, read receipts, disappearing messages
+4. ✅ Installable app with notifications even when the site is closed
+5. Group calls
+6. Apps for Windows, macOS, Linux, Android and iOS
+7. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
 
 ---
 
@@ -108,6 +132,9 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 - **Browsers without WebCrypto** (plain `http://` pages, some older browsers) load [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) instead. They produce the same keys, signatures and ciphertext, so both kinds of browser can talk to each other.
 - **Messages:** encrypted with AES-256-GCM using a key both people derive from ECDH. The relay sets the sender's name itself, so nobody can pretend to be someone else.
 - **Calls:** WebRTC. The relay only passes the encrypted call setup between the two browsers.
+- **Files:** split into 32 KB pieces, each encrypted like a message ([`client/files.js`](client/files.js)). Pieces are acknowledged only once the whole file has arrived, so a reload resumes the transfer.
+- **Groups:** no server-side groups. The sender encrypts a copy for each member, and group changes (create, rename, add, leave) are messages too.
+- **Notifications:** standard Web Push. The relay makes its own VAPID key on first use and stores it, so there's nothing to configure. Push messages are encrypted for the browser (RFC 8291) and say only who wrote, plus whether it was a message or a missed call.
 - **Code:** [`client/crypto.js`](client/crypto.js), [`client/transport.js`](client/transport.js), [`client/app.js`](client/app.js), [`relay/src/index.js`](relay/src/index.js).
 
 </details>
