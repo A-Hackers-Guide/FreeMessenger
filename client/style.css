@@ -78,18 +78,18 @@ h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
 #chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #convo { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-.bar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; min-height: 60px; border-bottom: 1px solid var(--line); background: var(--panel); position: relative; padding-top: max(10px, env(safe-area-inset-top)); }
+.bar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; min-height: 60px; border-bottom: 1px solid var(--line); background: var(--panel); position: relative; padding-top: 10px; padding-top: max(10px, env(safe-area-inset-top)); }
 .me { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 17px; min-width: 0; }
 .me strong { overflow: hidden; text-overflow: ellipsis; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--muted); }
 
-.menu { position: absolute; right: 12px; top: 54px; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; box-shadow: 0 8px 30px rgb(0 0 0 / .15); display: grid; min-width: 220px; }
+.menu { position: absolute; right: 12px; top: 54px; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; box-shadow: 0 8px 30px rgba(0, 0, 0, .15); display: grid; min-width: 220px; }
 .menu button { text-align: left; padding: 9px 12px; border-radius: 8px; }
 .menu button:hover { background: var(--theirs); }
 
-.banner { margin: 12px; padding: 12px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 12%, transparent); font-size: 13px; }
+.banner { margin: 12px; padding: 12px; border-radius: 12px; background: rgba(47, 111, 237, .12); background: color-mix(in srgb, var(--accent) 12%, transparent); font-size: 13px; }
 .banner p { margin: 0 0 8px; }
 
 .add { display: flex; align-items: center; gap: 6px; margin: 12px 12px 0; border: 1px solid var(--line); border-radius: 12px; padding: 4px 4px 4px 12px; background: var(--bg); }
@@ -100,7 +100,7 @@ h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
 #contacts { list-style: none; margin: 0; padding: 4px 6px; overflow-y: auto; flex: 1; }
 #contacts li { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 12px; cursor: pointer; }
 #contacts li:hover { background: var(--bg); }
-#contacts li.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#contacts li.active { background: rgba(47, 111, 237, .14); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .avatar, .call-avatar { display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; flex: none; }
 .avatar { width: 42px; height: 42px; }
 #contacts .meta { flex: 1; min-width: 0; display: grid; }
@@ -113,7 +113,7 @@ h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
 .peer strong { font-size: 16px; }
 
 #messages { list-style: none; margin: 0; padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
-#messages li { max-width: min(75%, 560px); display: grid; }
+#messages li { max-width: 75%; max-width: min(75%, 560px); display: grid; }
 #messages .mine { align-self: flex-end; justify-items: end; }
 #messages .theirs { align-self: flex-start; }
 #messages .system { align-self: center; justify-items: center; max-width: 90%; }
@@ -123,34 +123,34 @@ h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
 .system .bubble { background: none; color: var(--muted); font-size: 13px; padding: 4px; }
 #messages .meta { font-size: 11px; color: var(--muted); padding: 2px 6px 6px; }
 
-.composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+.composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel); padding-bottom: 10px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 .composer textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 20px; padding: 9px 14px; background: var(--bg); outline: none; max-height: 160px; }
 .composer .primary { border-radius: 20px; }
 
 /* ---------- call ---------- */
 #call { position: fixed; inset: 0; z-index: 20; background: #0b0d10; color: #fff; display: grid; place-items: center; }
 #remote-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #0b0d10; }
-#local-video { position: absolute; right: 16px; top: max(16px, env(safe-area-inset-top)); width: min(28vw, 180px); aspect-ratio: 3/4; object-fit: cover; border-radius: 14px; border: 2px solid rgb(255 255 255 / .25); background: #222; transform: scaleX(-1); }
+#local-video { position: absolute; right: 16px; top: 16px; top: max(16px, env(safe-area-inset-top)); width: 28vw; width: min(28vw, 180px); aspect-ratio: 3/4; object-fit: cover; border-radius: 14px; border: 2px solid rgba(255, 255, 255, .25); background: #222; transform: scaleX(-1); }
 .call-avatar { display: none; width: 112px; height: 112px; font-size: 44px; position: relative; }
 #call.audio video { display: none; }
 #call.audio .call-avatar { display: grid; }
-.call-info { position: absolute; top: max(28px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; display: grid; gap: 2px; text-shadow: 0 1px 8px rgb(0 0 0 / .6); }
+.call-info { position: absolute; top: 28px; top: max(28px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; display: grid; gap: 2px; text-shadow: 0 1px 8px rgba(0, 0, 0, .6); }
 #call:not(.audio) .call-info { left: 16px; right: auto; text-align: left; }
 .call-info strong { font-size: 22px; }
 .call-info span { opacity: .85; }
-.call-controls { position: absolute; bottom: max(32px, env(safe-area-inset-bottom)); left: 0; right: 0; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 0 16px; }
+.call-controls { position: absolute; bottom: 32px; bottom: max(32px, env(safe-area-inset-bottom)); left: 0; right: 0; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 0 16px; }
 .call-controls button { padding: 14px 22px; border-radius: 30px; font-weight: 600; color: #fff; }
-.round { background: rgb(255 255 255 / .18); backdrop-filter: blur(8px); }
+.round { background: rgba(255, 255, 255, .18); backdrop-filter: blur(8px); }
 .accept { background: var(--ok); }
 .hangup { background: var(--danger); }
 
 /* ---------- dialog + toast ---------- */
-dialog { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--text); max-width: min(420px, calc(100vw - 32px)); padding: 24px; }
-dialog::backdrop { background: rgb(0 0 0 / .45); }
+dialog { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--text); max-width: 420px; max-width: min(420px, calc(100vw - 32px)); padding: 24px; }
+dialog::backdrop { background: rgba(0, 0, 0, .45); }
 dialog h2 { margin: 0 0 8px; font-size: 18px; }
 dialog p { color: var(--muted); margin: 0 0 16px; }
 .code { font: 600 26px/1.3 ui-monospace, Menlo, monospace; letter-spacing: .08em; color: var(--text) !important; text-align: center; }
-#toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 30; background: #222; color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100vw - 32px); box-shadow: 0 8px 30px rgb(0 0 0 / .25); }
+#toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 30; background: #222; color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100vw - 32px); box-shadow: 0 8px 30px rgba(0, 0, 0, .25); }
 
 /* ---------- phones ---------- */
 @media (max-width: 720px) {
@@ -161,3 +161,8 @@ dialog p { color: var(--muted); margin: 0 0 16px; }
   .back { display: grid; }
   #messages li { max-width: 85%; }
 }
+
+/* Browsers without <dialog> show it as a plain box over the page. */
+dialog.dialog-fallback { display: block; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 40; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .45); }
+
+.unsupported { margin: 40px auto; max-width: 420px; padding: 24px; text-align: center; }

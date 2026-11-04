@@ -4,18 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FreeMessenger</title>
-  <meta name="description" content="Free messaging, voice and video calls in any web browser. Your username is your number.">
+  <meta name="description" content="Free texting, voice and video calls in any web browser. Your username works like a phone number.">
   <meta name="theme-color" content="#2f6fed">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M8 10h16v10H14l-6 4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
-  <script type="module" src="app.js"></script>
+  <script src="app.min.js" defer></script>
 </head>
 <body>
+  <noscript><div class="card unsupported">FreeMessenger needs JavaScript. Turn it on for this site, or open it in another browser.</div></noscript>
+  <div id="unsupported" class="card unsupported" hidden>
+    <h1>FreeMessenger</h1>
+    <p>This browser is too old to run FreeMessenger. Open it in any browser from the last several years: Chrome, Firefox, Safari, Edge, Samsung Internet, Opera or Brave.</p>
+  </div>
+  <script>
+    // Written for the oldest browsers on purpose: if the app couldn't start,
+    // say so instead of showing a blank page.
+    window.addEventListener && window.addEventListener("load", function () {
+      if (!window.FM_LOADED) document.getElementById("unsupported").hidden = false;
+    });
+  </script>
   <div id="welcome" hidden>
     <div class="card">
       <div class="logo" aria-hidden="true"></div>
       <h1>FreeMessenger</h1>
-      <p class="lede">Free texting, voice and video calls in any web browser. Your username is your phone number.</p>
+      <p class="lede">Free texting, voice and video calls in any web browser. Your username works like a phone number.</p>
       <p id="invite-note" class="invite"></p>
       <form id="signup-form">
         <label for="signup-name">Pick a username</label>

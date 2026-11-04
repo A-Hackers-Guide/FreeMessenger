@@ -1,9 +1,17 @@
+import "./compat.js";
 import { RELAY_URL } from "./config.js";
 import * as E2E from "./crypto.js";
+import { uuid, clear, readFileText, openDialog, closeDialog, copyText, AudioCtx, canCall } from "./compat.js";
+import { request, createConnection } from "./transport.js";
+
+window.FM_LOADED = true;
 
 const $ = (id) => document.getElementById(id);
 const USERNAME = /^[a-z0-9_]{3,20}$/;
 const MAX_HISTORY = 1000;
+// Invite links always point at the real site, even when FreeMessenger was
+// opened through a proxy or a translation page.
+const SITE_URL = "https://a-hackers-guide.github.io/FreeMessenger/";
 
 // ---------- local storage (everything stays in this browser) ----------
 
@@ -26,12 +34,11 @@ const saveChat = (name, list) => store.set("chat." + name, list.slice(-MAX_HISTO
 
 // ---------- relay ----------
 
-async function api(path, opts = {}) {
+async function api(path, body) {
   let r;
-  try { r = await fetch(RELAY_URL + path, opts); } catch { throw new Error("Can't reach the relay. Check your connection."); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(data.error || `Relay error ${r.status}`), { status: r.status });
-  return data;
+  try { r = await request(RELAY_URL + path, body); } catch { throw new Error("Can't reach the relay. Check your connection."); }
+  if (!r.ok) throw Object.assign(new Error(r.data.error || `Relay error ${r.status}`), { status: r.status });
+  return r.data;
 }
 
 async function getContact(name) {
@@ -42,53 +49,25 @@ async function getContact(name) {
   return contacts[name];
 }
 
-let ws = null;
-let wsReady = false;
-let retry = 0;
-let refSeq = 0;
-const pending = new Map();
+let conn = null;
 
 function connect() {
-  ws = new WebSocket(RELAY_URL.replace(/^http/, "ws") + "/api/ws/" + me.username);
-  ws.onmessage = async (ev) => {
-    if (ev.data === "pong") return;
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === "challenge") {
-      ws.send(JSON.stringify({ type: "auth", signature: await E2E.signChallenge(me, msg.challenge) }));
-    } else if (msg.type === "ready") {
-      wsReady = true;
-      retry = 0;
-      setConnected(true);
-      flushOutbox();
-    } else if (msg.type === "message") {
-      handleIncoming(msg);
-    } else if (msg.type === "sent") {
-      pending.get(msg.ref)?.(msg);
-      pending.delete(msg.ref);
-    }
-  };
-  ws.onclose = (ev) => {
-    wsReady = false;
-    setConnected(false);
-    for (const resolve of pending.values()) resolve({ error: "offline" });
-    pending.clear();
-    if (ev.code === 4001) return toast("This browser's keys don't match your account. Restore your backup file.");
-    setTimeout(connect, Math.min(30000, 1000 * 2 ** retry++));
-  };
-}
-
-setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.send("ping"); }, 50000);
-
-function sendRaw(to, body, ephemeral) {
-  return new Promise((resolve) => {
-    if (!wsReady) return resolve({ error: "offline" });
-    const ref = ++refSeq;
-    pending.set(ref, resolve);
-    ws.send(JSON.stringify({ type: "send", ref, to, body, ephemeral }));
-    setTimeout(() => { if (pending.delete(ref)) resolve({ error: "timeout" }); }, 15000);
+  conn = createConnection({
+    relay: RELAY_URL,
+    username: me.username,
+    sign: (challenge) => E2E.signChallenge(me, challenge),
+    store,
+    onMessage: handleIncoming,
+    onState: (on, mode) => {
+      setConnected(on, mode);
+      if (on) flushOutbox();
+    },
+    onFatal: () => toast("This browser's keys don't match your account. Restore your backup file."),
   });
 }
+
+const online = () => !!(conn && conn.ready);
+const sendRaw = (to, body, ephemeral) => conn ? conn.send(to, body, ephemeral) : Promise.resolve({ error: "offline" });
 
 async function sendPayload(to, payload, ephemeral = false) {
   try {
@@ -100,7 +79,7 @@ async function sendPayload(to, payload, ephemeral = false) {
 }
 
 async function handleIncoming(env) {
-  if (!env.ephemeral) ws.send(JSON.stringify({ type: "ack", items: [{ id: env.id, ts: env.ts }] }));
+  if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
   let payload;
   try {
     const c = await getContact(env.from);
@@ -146,7 +125,7 @@ function updateMessage(name, mid, patch) {
 }
 
 async function sendText(to, text) {
-  const m = { mid: crypto.randomUUID(), mine: true, text, ts: Date.now(), status: "sending" };
+  const m = { mid: uuid(), mine: true, text, ts: Date.now(), status: "sending" };
   addMessage(to, m);
   deliverText(to, m);
 }
@@ -170,7 +149,7 @@ const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minu
 
 function renderContacts() {
   const ul = $("contacts");
-  ul.replaceChildren();
+  clear(ul);
   const names = Object.keys(contacts).sort((a, b) => (contacts[b].last || 0) - (contacts[a].last || 0));
   for (const name of names) {
     const c = contacts[name];
@@ -202,7 +181,7 @@ function appendMessage(m, scroll) {
   meta.querySelector(".status").textContent = statusLabel(m);
   li.append(bubble, meta);
   $("messages").append(li);
-  if (scroll) li.scrollIntoView({ block: "end" });
+  if (scroll) li.scrollIntoView(false);
 }
 
 function openChat(name) {
@@ -211,9 +190,10 @@ function openChat(name) {
   $("empty").hidden = true;
   $("convo").hidden = false;
   $("peer-name").textContent = "@" + name;
-  $("messages").replaceChildren();
+  clear($("messages"));
   for (const m of loadChat(name)) appendMessage(m, false);
-  $("messages").lastElementChild?.scrollIntoView({ block: "end" });
+  const last = $("messages").lastElementChild;
+  if (last) last.scrollIntoView(false);
   document.body.classList.add("in-convo");
   renderContacts();
   updateTitle();
@@ -228,9 +208,9 @@ function closeChat() {
   renderContacts();
 }
 
-function setConnected(on) {
+function setConnected(on, mode) {
   $("conn").className = "dot " + (on ? "on" : "off");
-  $("conn").title = on ? "Connected" : "Reconnecting…";
+  $("conn").title = !on ? "Reconnecting…" : mode === "http" ? "Connected (compatibility mode for this network)" : "Connected";
 }
 
 function updateTitle() {
@@ -265,6 +245,11 @@ async function getIceServers() {
 }
 
 async function getMedia(video) {
+  if (!canCall()) {
+    throw new Error(window.isSecureContext === false
+      ? "Calls only work when the address starts with https://. Texting still works here."
+      : "This browser can't make calls. Texting still works.");
+  }
   try {
     return await navigator.mediaDevices.getUserMedia({ audio: true, video });
   } catch {
@@ -279,21 +264,33 @@ async function getMedia(video) {
 async function makePeerConnection() {
   const pc = new RTCPeerConnection({ iceServers: await getIceServers() });
   pc.onicecandidate = (e) => {
-    if (e.candidate) sendPayload(call.peer, { kind: "ice", callId: call.id, candidate: e.candidate.toJSON() }, true);
+    if (!e.candidate) return;
+    const c = e.candidate.toJSON ? e.candidate.toJSON()
+      : { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex };
+    sendPayload(call.peer, { kind: "ice", callId: call.id, candidate: c }, true);
   };
-  pc.ontrack = (e) => { $("remote-video").srcObject = e.streams[0]; };
-  pc.onconnectionstatechange = () => {
+  const remote = new MediaStream();
+  pc.ontrack = (e) => {
+    if (e.streams && e.streams[0]) $("remote-video").srcObject = e.streams[0];
+    else { remote.addTrack(e.track); $("remote-video").srcObject = remote; }
+  };
+  // Older Firefox and Safari only report iceConnectionState.
+  const state = () => pc.connectionState ||
+    ({ completed: "connected", checking: "connecting" })[pc.iceConnectionState] || pc.iceConnectionState;
+  pc.onconnectionstatechange = pc.oniceconnectionstatechange = () => {
     if (pc !== call.pc) return;
-    if (pc.connectionState === "connected") {
+    const s = state();
+    if (s === "connected") {
+      if (call.state === "live") return;
       call.state = "live";
       call.started ||= Date.now();
       clearInterval(call.timer);
       call.timer = setInterval(() => setCallStatus(duration()), 1000);
       setCallStatus(duration());
       showCallControls();
-    } else if (pc.connectionState === "disconnected") {
+    } else if (s === "disconnected") {
       setCallStatus("Reconnecting…");
-    } else if (pc.connectionState === "failed") {
+    } else if (s === "failed") {
       setCallStatus("Couldn't connect");
       setTimeout(() => endCall(true), 1500);
     }
@@ -317,8 +314,12 @@ async function drainIce() {
 
 async function startCall(peer, video) {
   if (call.state !== "idle") return;
-  if (!wsReady) return toast("You're offline right now.");
-  Object.assign(call, { state: "calling", peer, id: crypto.randomUUID(), video, started: 0, pendingIce: [] });
+  if (!online()) return toast("You're offline right now.");
+  if (!canCall()) return toast(window.isSecureContext === false
+    ? "Calls only work when the address starts with https://. Texting still works here."
+    : "This browser can't make calls. Texting still works.");
+  conn.boost(60000);
+  Object.assign(call, { state: "calling", peer, id: uuid(), video, started: 0, pendingIce: [] });
   showCallScreen(`Calling…`);
   try {
     call.local = await getMedia(video);
@@ -341,6 +342,7 @@ async function startCall(peer, video) {
 async function acceptCall() {
   if (call.state !== "ringing") return;
   call.state = "connecting";
+  conn.boost(60000);
   stopRinging();
   setCallStatus("Connecting…");
   $("accept-btn").hidden = true;
@@ -363,6 +365,7 @@ async function handleCall(from, p, ts) {
     if (Date.now() - ts > 60000) return;
     if (call.state !== "idle") return sendPayload(from, { kind: "call-busy", callId: p.callId }, true);
     Object.assign(call, { state: "ringing", peer: from, id: p.callId, video: !!p.video, offer: p.sdp, started: 0, pendingIce: [] });
+    conn.boost(60000);
     showCallScreen(p.video ? "Incoming video call" : "Incoming voice call", true);
     startRinging(true);
     notify(`@${from} is calling`, p.video ? "Video call" : "Voice call");
@@ -412,7 +415,7 @@ function endCall(tellPeer, note) {
   $("remote-video").srcObject = null;
   $("local-video").srcObject = null;
   $("call").hidden = true;
-  if (peer) addMessage(peer, { mid: crypto.randomUUID(), system: true, mine: false, text: "📞 " + label, ts: Date.now() });
+  if (peer) addMessage(peer, { mid: uuid(), system: true, mine: false, text: "📞 " + label, ts: Date.now() });
 }
 
 function duration() {
@@ -447,7 +450,7 @@ let ring = null;
 function startRinging(incoming) {
   stopRinging();
   try {
-    const ctx = new AudioContext();
+    const ctx = new AudioCtx();
     const gain = ctx.createGain();
     gain.gain.value = 0;
     gain.connect(ctx.destination);
@@ -485,7 +488,7 @@ function downloadBackup() {
 
 async function importBackup(file) {
   try {
-    const data = JSON.parse(await file.text());
+    const data = JSON.parse(await readFileText(file));
     if (!data.freemessenger || !USERNAME.test(data.username) || !data.sigPriv || !data.ecdhPriv) throw new Error();
     const profile = await api(`/api/user/${data.username}`);
     if (profile.sigPub.x !== data.sigPub.x || profile.sigPub.y !== data.sigPub.y) throw new Error();
@@ -536,11 +539,7 @@ $("signup-form").onsubmit = async (e) => {
   btn.disabled = true;
   try {
     const identity = await E2E.createIdentity(name);
-    await api("/api/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: name, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub }),
-    });
+    await api("/api/register", { username: name, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub });
     me = identity;
     store.set("identity", me);
     start();
@@ -559,18 +558,21 @@ $("add-form").onsubmit = (e) => {
   openContact($("add-name").value.trim().toLowerCase().replace(/^@/, ""));
 };
 
-$("send-form").onsubmit = (e) => {
-  e.preventDefault();
+function submitMessage() {
   const text = $("send-text").value.trim();
   if (!text || !active) return;
   $("send-text").value = "";
   $("send-text").style.height = "";
   sendText(active, text.slice(0, 8000));
+}
+$("send-form").onsubmit = (e) => {
+  e.preventDefault();
+  submitMessage();
 };
 $("send-text").onkeydown = (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
     e.preventDefault();
-    $("send-form").requestSubmit();
+    submitMessage();
   }
 };
 $("send-text").oninput = (e) => {
@@ -601,18 +603,22 @@ $("safety-btn").onclick = async () => {
   const c = await getContact(active);
   $("safety-peer").textContent = "@" + active;
   $("safety-code").textContent = await E2E.safetyCode(me.ecdhPub, c.ecdhPub);
-  $("safety-dialog").showModal();
+  openDialog($("safety-dialog"));
 };
-$("safety-close").onclick = () => $("safety-dialog").close();
+$("safety-close").onclick = () => closeDialog($("safety-dialog"));
 
 $("menu-btn").onclick = (e) => { e.stopPropagation(); $("menu").hidden = !$("menu").hidden; };
 document.addEventListener("click", () => ($("menu").hidden = true));
 $("share-btn").onclick = async () => {
-  const link = `${location.origin}${location.pathname}#${me.username}`;
+  const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  const link = (local ? location.origin + location.pathname : SITE_URL) + "#" + me.username;
   try {
-    if (navigator.share) await navigator.share({ title: "Message me on FreeMessenger", url: link });
-    else { await navigator.clipboard.writeText(link); toast("Link copied: " + link); }
-  } catch {}
+    if (navigator.share) return await navigator.share({ title: "Message me on FreeMessenger", url: link });
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+  }
+  await copyText(link);
+  toast("Link copied: " + link);
 };
 $("backup-btn").onclick = downloadBackup;
 $("banner-backup-btn").onclick = downloadBackup;
