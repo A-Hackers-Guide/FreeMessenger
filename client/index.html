@@ -9,8 +9,13 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M8 10h16v10H14l-6 4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="FreeMessenger">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="application-name" content="FreeMessenger">
+  <meta name="format-detection" content="telephone=no">
   <script src="app.min.js" defer></script>
 </head>
 <body>
@@ -70,7 +75,7 @@
           <button id="settings-btn">Settings</button>
           <button id="admin-btn" hidden>Admin panel</button>
           <button id="backup-btn">Download backup</button>
-          <button id="install-btn" hidden>Install app</button>
+          <button id="install-btn">📲 Get the app</button>
           <button id="logout-btn" class="danger-text">Sign out of this browser</button>
         </div>
       </header>
@@ -355,6 +360,21 @@
       <button type="submit" class="primary">Unlock</button>
     </form>
   </div>
+
+  <dialog id="install-dialog" class="install-dialog">
+    <h2>Get the FreeMessenger app</h2>
+    <p id="install-here" class="install-here"></p>
+    <button type="button" id="install-now" class="primary" hidden>Install now</button>
+    <h3 class="settings-head">On other devices</h3>
+    <dl class="install-list">
+      <dt>📱 Android</dt><dd><a href="https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest/download/FreeMessenger.apk">Download the app (APK)</a>, or in Chrome: ⋮ → <b>Install app</b>.</dd>
+      <dt>📱 iPhone and iPad</dt><dd>In Safari (or Chrome, Edge, Firefox on iOS 16.4+): <b>Share</b> → <b>Add to Home Screen</b>. Open it from the home screen to get notifications.</dd>
+      <dt>💻 Mac</dt><dd>Safari: <b>File → Add to Dock</b>. Chrome or Edge: the install icon in the address bar.</dd>
+      <dt>💻 Windows, Linux, ChromeOS</dt><dd>Chrome or Edge: the install icon in the address bar, or ⋮ → <b>Install FreeMessenger</b>.</dd>
+      <dt>🌐 Anything else</dt><dd>Just open the site in any browser. Everything works there too.</dd>
+    </dl>
+    <button type="button" id="install-close" class="ghost">Close</button>
+  </dialog>
 
   <dialog id="privacy-dialog">
     <h2>What's new in FreeMessenger</h2>

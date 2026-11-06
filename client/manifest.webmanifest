@@ -1,14 +1,29 @@
 {
+  "id": "/FreeMessenger/",
   "name": "FreeMessenger",
   "short_name": "FreeMessenger",
   "description": "Free texting, voice and video calls. Your username works like a phone number.",
-  "start_url": "./",
+  "start_url": "./?source=app",
   "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#f4f5f8",
   "theme_color": "#2f6fed",
+  "categories": ["social", "communication"],
+  "launch_handler": { "client_mode": "focus-existing" },
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Saved messages", "url": "./?action=saved", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "New group", "url": "./?action=group", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "Call history", "url": "./?action=calls", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ],
+  "related_applications": [
+    { "platform": "webapp", "url": "https://a-hackers-guide.github.io/FreeMessenger/manifest.webmanifest" }
   ]
 }

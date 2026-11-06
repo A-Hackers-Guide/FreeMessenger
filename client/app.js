@@ -2775,6 +2775,13 @@ function start() {
   connect();
   Push.init({ username: me.username, onOpenChat: (id) => chats[id] && openChat(id) });
   const hash = location.hash.slice(1).toLowerCase();
+  const action = new URLSearchParams(location.search).get("action");
+  if (action) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    if (action === "saved") { ensureChat(me.username); openChat(me.username); }
+    else if (action === "group") openGroupDialog(null);
+    else if (action === "calls") showCalls();
+  }
   if (handleJoinLink(hash)) return;
   if (USERNAME.test(hash) && hash !== me.username) openContact(hash);
 }
@@ -2958,6 +2965,7 @@ $("notify-btn").onclick = async () => {
   $("notify-btn").textContent = Push.status();
 };
 $("install-btn").onclick = () => Push.install();
+Push.initInstall();
 $("logout-btn").onclick = async () => {
   if (!confirm("Sign out of this browser? Your account only comes back with your backup file. Messages saved here will be removed.")) return;
   await Push.disable(conn);

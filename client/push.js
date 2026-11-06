@@ -24,9 +24,7 @@ export function registerWorker() {
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     installPrompt = e;
-    $("install-btn").hidden = false;
   });
-  if (isIOS() && !standalone()) $("install-btn").hidden = false;
   if (!("serviceWorker" in navigator) || window.isSecureContext === false) return;
   navigator.serviceWorker.register("sw.js").then((r) => { reg = r; }).catch(() => {});
   navigator.serviceWorker.addEventListener("message", (e) => {
@@ -43,16 +41,39 @@ export function init(opts) {
   }
 }
 
+const isMac = () => /Macintosh/.test(navigator.userAgent) && !(navigator.maxTouchPoints > 1);
+const isAndroid = () => /Android/.test(navigator.userAgent);
+const isSafari = () => /Safari\//.test(navigator.userAgent) && !/Chrome\/|Chromium\/|Edg\/|OPR\/|Firefox\/|FxiOS|CriOS|EdgiOS/.test(navigator.userAgent);
+const isFirefoxDesktop = () => /Firefox\//.test(navigator.userAgent) && !isAndroid();
+const inAndroidApp = () => /source=android/.test(location.search) || document.referrer.indexOf("android-app://") === 0;
+
+// What to do on this device to get the app.
+function hereText() {
+  if (standalone() || inAndroidApp()) return "You're already using the app. 🎉";
+  if (installPrompt) return "This browser can install FreeMessenger as an app:";
+  if (isIOS()) return "On this iPhone or iPad: tap Share (the square with an arrow), then \u201cAdd to Home Screen\u201d. Then open FreeMessenger from your home screen.";
+  if (isAndroid()) return "On this phone: download the app below, or tap ⋮ → \u201cInstall app\u201d in Chrome.";
+  if (isMac() && isSafari()) return "On this Mac: in Safari's menu bar choose File → Add to Dock.";
+  if (isFirefoxDesktop()) return "Firefox on computers can't install web apps. Open this page in Chrome, Edge or Safari to install it, or keep using it here.";
+  return "Use your browser's menu and choose \u201cInstall app\u201d (or the install icon in the address bar).";
+}
+
 export function install() {
-  if (installPrompt) {
+  $("install-here").textContent = hereText();
+  $("install-now").hidden = !installPrompt;
+  const d = $("install-dialog");
+  if (d.showModal) d.showModal(); else d.setAttribute("open", "");
+}
+
+export function initInstall() {
+  $("install-now").onclick = () => {
+    if (!installPrompt) return;
     installPrompt.prompt();
     installPrompt = null;
-    $("install-btn").hidden = true;
-    return;
-  }
-  alert(isIOS()
-    ? "To install FreeMessenger: tap the Share button in Safari, then \"Add to Home Screen\". After that, open it from your home screen and turn on notifications in Settings."
-    : "Use your browser's menu and choose \"Install app\" or \"Add to Home screen\".");
+    $("install-now").hidden = true;
+  };
+  $("install-close").onclick = () => { const d = $("install-dialog"); if (d.close) d.close(); else d.removeAttribute("open"); };
+  if (standalone() || inAndroidApp()) $("install-btn").hidden = true;
 }
 
 export function status() {
