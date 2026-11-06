@@ -34,18 +34,23 @@ async function call(action, extra) {
   const conn = ctx.conn();
   if (!conn || !conn.ready) throw new Error("Not connected.");
   const r = await conn.op("admin", Object.assign({ action }, extra));
-  if (r.error) throw Object.assign(new Error(r.error), { needCode: !!r.needCode });
+  if (r.error) throw Object.assign(new Error(r.error), { needApproval: !!r.needApproval, banned: !!r.banned });
   return r;
 }
 
-// A trusted browser unlocks by itself; anywhere else asks for the code
-// shown on a trusted browser (or the first-time setup code from the PC).
+// An approved browser opens the panel by itself (it signs this connection's
+// challenge with its device key). Any other browser asks for approval, which
+// the owner gives from one of their own browsers; not approved within 10
+// minutes, or banned, and this browser can't ask again.
+let isSuperHere = false;
+
 async function tryDevice() {
   if (!(await Device.known())) return false;
   try {
     const conn = ctx.conn();
     const d = await Device.get();
-    await call("device-unlock", { deviceId: d.id, sig: await Device.sign("fm-admin-device:" + conn.nonce) });
+    const r = await call("device-unlock", { deviceId: d.id, sig: await Device.sign("fm-admin-device:" + conn.nonce) });
+    isSuperHere = !!r.super;
     trustedHere = true;
     return true;
   } catch {
@@ -53,36 +58,79 @@ async function tryDevice() {
   }
 }
 
-function askCode(body, first, then) {
+let waitTimer = null;
+
+async function askApproval(body, then) {
   clear(body);
-  const input = el("input", { autocomplete: "one-time-code", maxlength: "10", placeholder: first ? "ABCD2345" : "123456", class: "admin-filter code-input", autocapitalize: "characters", spellcheck: "false" });
+  clearInterval(waitTimer);
+  let info;
+  try {
+    info = await call("request", { device: await Device.publicInfo() });
+  } catch (e) {
+    body.appendChild(el("div", { class: "admin-code" }, el("h3", {}, e.banned ? "🚫 This browser is banned" : "Can't open the admin panel"), el("p", { class: "hint" }, e.message)));
+    return;
+  }
+  if (info.needSetup) return askSetup(body, then);
+  const status = el("p", { class: "hint" }, "");
+  body.appendChild(el("div", { class: "admin-code" },
+    el("h3", {}, "⏳ Waiting for approval"),
+    el("p", { class: "hint" }, "Open the admin panel on one of the owner's approved browsers. A request for this browser is waiting there (also in the Security tab): tap Approve."),
+    el("p", { class: "hint" }, "If it isn't approved within 10 minutes, this browser is banned from the admin panel."),
+    status));
+  const poll = async () => {
+    try {
+      const r = await call("request-status", { rid: info.rid });
+      if (r.status === "approved") {
+        clearInterval(waitTimer);
+        if (await tryDevice()) return then();
+      } else if (r.status === "banned" || r.status === "gone") {
+        clearInterval(waitTimer);
+        clear(body);
+        body.appendChild(el("div", { class: "admin-code" }, el("h3", {}, "🚫 Not approved"), el("p", { class: "hint" }, "This browser is now banned from the admin panel.")));
+      } else {
+        status.textContent = `Time left: ${Math.floor(r.left / 60000)}:${String(Math.floor((r.left % 60000) / 1000)).padStart(2, "0")}`;
+      }
+    } catch {}
+  };
+  poll();
+  waitTimer = setInterval(() => { if ($("admin").hidden) return clearInterval(waitTimer); poll(); }, 3000);
+}
+
+// The very first browser: the setup code written on the home PC.
+function askSetup(body, then) {
+  clear(body);
+  const input = el("input", { autocomplete: "one-time-code", maxlength: "10", placeholder: "ABCD2345", class: "admin-filter code-input", autocapitalize: "characters", spellcheck: "false" });
   const err = el("p", { class: "error", role: "alert" });
-  const trust = el("input", { type: "checkbox" });
   const form = el("form", { class: "admin-code" },
-    el("h3", {}, first ? "Trust this browser" : "Enter your admin code"),
-    el("p", { class: "hint" }, first
-      ? "Type the setup code from E:\\FreeMessenger\\data\\device-setup-code.txt on the home PC. This browser will then open the admin panel without a code."
-      : "Open the admin panel on your trusted browser (your Mac), tap \u201cCode for another device\u201d, and type the 6-digit code here."),
-    input,
-    first ? null : el("label", { class: "trust-row" }, trust, " Trust this browser too (no code next time)"),
-    err,
-    el("button", { type: "submit", class: "primary" }, "Unlock"));
+    el("h3", {}, "Set up the admin panel"),
+    el("p", { class: "hint" }, "Type the setup code from E:\\FreeMessenger\\data\\device-setup-code.txt on the home PC. This browser becomes your first approved admin browser."),
+    input, err, el("button", { type: "submit", class: "primary" }, "Set up"));
   form.onsubmit = async (e) => {
     e.preventDefault();
     err.textContent = "";
     try {
-      const extra = { code: input.value.trim(), trust: first || trust.checked };
-      if (extra.trust) extra.device = await Device.publicInfo();
-      const r = await call("unlock", extra);
-      trustedHere = !!r.trusted;
+      const r = await call("unlock", { code: input.value.trim(), device: await Device.publicInfo() });
+      isSuperHere = !!r.super;
+      trustedHere = true;
       then();
     } catch (x) {
       err.textContent = x.message;
-      input.select();
     }
   };
   body.appendChild(form);
   input.focus();
+}
+
+// The owner's quick answer to a request that just came in.
+export async function decide(rid, approve) {
+  try {
+    if (!trustedHere && !(await tryDevice())) throw new Error("Open the admin panel on an approved browser first.");
+    await call(approve ? "approve-browser" : "ban-request", { rid });
+    ctx.toast(approve ? "Approved." : "Banned.");
+    if (!$("admin").hidden && tab === "security") show("security");
+  } catch (e) {
+    ctx.toast(e.message);
+  }
 }
 
 export function init(c) {
@@ -112,9 +160,11 @@ async function show(name, reload) {
     body.appendChild(el("p", { class: "hint" }, "Loading…"));
     try {
       data = await call("overview");
+      if (!trustedHere) { const w = await call("whoami"); isSuperHere = !!w.super; trustedHere = true; }
+      document.querySelectorAll("#admin .tabs [data-owner]").forEach((b) => (b.hidden = !isSuperHere));
     } catch (e) {
-      if (e.needCode && (await tryDevice())) return show(name, true);
-      if (e.needCode) return askCode(body, /setup code/.test(e.message), () => show(name, true));
+      if (e.needApproval && (await tryDevice())) return show(name, true);
+      if (e.needApproval) return askApproval(body, () => show(name, true));
       clear(body);
       body.appendChild(el("p", { class: "error" }, e.message));
       return;
@@ -124,7 +174,7 @@ async function show(name, reload) {
   if (name === "accounts") renderAccounts(body);
   else if (name === "messages") renderMessages(body);
   else if (name === "viewer") renderViewer(body);
-  else if (name === "devices") renderDevices(body);
+  else if (name === "security") renderSecurity(body);
   else if (name === "reports") renderReports(body);
   else if (name === "alerts") renderAlerts(body);
   else if (name === "settings") renderSettings(body);
@@ -458,54 +508,71 @@ function renderActivity(body) {
 
 const stat = (label, value) => el("div", { class: "stat" }, el("strong", {}, String(value)), el("small", {}, label));
 
-// ---------- trusted browsers, and codes for other devices ----------
+// ---------- security: admin sessions, approvals, bans, admins (owner only) ----------
 
-let codeTimer = null;
+async function renderSecurity(body) {
+  let r;
+  try { r = await call("security"); } catch (e) { return body.appendChild(el("p", { class: "error" }, e.message)); }
+  const btn = (label, fn, cls) => el("button", { class: "ghost small " + (cls || ""), onclick: fn }, label);
+  const act2 = async (action, extra, done) => {
+    try { await call(action, extra); ctx.toast(done); } catch (e) { ctx.toast(e.message); }
+    show("security");
+  };
 
-async function renderDevices(body) {
-  clearInterval(codeTimer);
-  if (trustedHere) {
-    const code = el("strong", { class: "big-code" }, "······");
-    const left = el("small", {}, "");
-    const tick = async () => {
-      if ($("admin").hidden || tab !== "devices") return clearInterval(codeTimer);
-      try {
-        const r = await call("current-code");
-        code.textContent = r.code.slice(0, 3) + " " + r.code.slice(3);
-        left.textContent = `Changes in ${r.left} seconds`;
-      } catch (e) {
-        code.textContent = "—";
-        left.textContent = e.message;
-      }
-    };
-    body.appendChild(el("div", { class: "stat code-card" }, el("small", {}, "Code for another device"), code, left));
-    tick();
-    codeTimer = setInterval(tick, 5000);
-  } else {
-    body.appendChild(el("p", { class: "hint" }, "This browser isn't trusted, so it can't show codes. Codes appear on your trusted browser."));
+  body.appendChild(el("h3", {}, `Waiting for approval (${r.requests.length})`));
+  if (!r.requests.length) body.appendChild(el("p", { class: "hint" }, "No browsers are asking right now."));
+  for (const q of r.requests) {
+    body.appendChild(el("div", { class: "admin-card request" },
+      el("strong", {}, `@${q.user} wants admin access`),
+      el("small", {}, `${q.device} · IP ${q.ip || "?"} · asked ${when(q.ts)} · banned in ${Math.ceil(q.left / 60000)} min if not approved`),
+      el("div", { class: "admin-actions" },
+        btn("✅ Approve", () => act2("approve-browser", { rid: q.rid }, "Approved.")),
+        btn("🚫 Ban this browser", () => act2("ban-request", { rid: q.rid }, "Banned."), "danger-text"))));
   }
-  body.appendChild(el("h3", {}, "Trusted browsers"));
-  const list = el("div", {}, el("p", { class: "hint" }, "Loading…"));
-  body.appendChild(list);
-  try {
-    const r = await call("devices");
-    clear(list);
-    if (!r.devices.length) list.appendChild(el("p", { class: "hint" }, "None yet."));
-    for (const d of r.devices) {
-      list.appendChild(el("div", { class: "admin-msg" },
-        el("strong", {}, d.name + (d.current ? " (this browser)" : "")),
-        el("small", {}, "Trusted " + when(d.added)),
-        el("button", { class: "link danger-text", onclick: async () => {
-          if (!confirm(`Stop trusting ${d.name}${d.current ? " (this browser)" : ""}? It will need a code next time.`)) return;
-          await call("untrust", { id: d.id }).catch((e) => ctx.toast(e.message));
-          if (d.current) trustedHere = false;
-          show("devices");
-        } }, "Stop trusting")));
-    }
-  } catch (e) {
-    clear(list);
-    list.appendChild(el("p", { class: "error" }, e.message));
+
+  body.appendChild(el("h3", {}, `Open admin sessions (${r.sessions.length})`));
+  for (const v of r.sessions) {
+    body.appendChild(el("div", { class: "admin-msg" },
+      el("strong", {}, `@${v.user} · ${v.device}${v.you ? " (this browser)" : ""}`),
+      el("small", {}, `IP ${v.ip || "?"} · ${v.kind} · since ${when(v.since)} · last: ${v.lastAction || "—"} at ${when(v.last)}`),
+      v.you ? null : btn("🚫 Ban this session", () => {
+        if (confirm(`Throw out this admin session (@${v.user}, ${v.device}, ${v.ip}) and ban that browser?`)) act2("ban-session", { id: v.id }, "Session banned.");
+      }, "danger-text")));
   }
+
+  body.appendChild(el("h3", {}, "Admins"));
+  for (const a of r.admins) {
+    body.appendChild(el("div", { class: "admin-msg" },
+      el("strong", {}, "@" + a.user + (a.owner ? " (owner)" : "")),
+      el("small", {}, a.owner ? "Everything, including reading messages and managing admins" : `Moderation only (can't read messages or change settings) · given by @${a.by} ${when(a.ts)}`),
+      a.owner ? null : btn("Take admin away", () => { if (confirm(`Take admin power away from @${a.user}?`)) act2("revoke-admin", { user: a.user }, "Done."); }, "danger-text")));
+  }
+  const who = el("input", { placeholder: "@username", class: "admin-filter", style: "max-width:220px" });
+  body.appendChild(el("div", { class: "row" }, who, btn("Make admin", () => {
+    const u = who.value.trim().replace(/^@/, "").toLowerCase();
+    if (!u) return;
+    if (confirm(`Give @${u} admin power? They can see accounts and IP addresses and freeze, time out or ban people. Their browser still needs your approval.`)) act2("grant-admin", { user: u }, `@${u} is an admin now.`);
+  })));
+
+  body.appendChild(el("h3", {}, `Approved admin browsers (${r.browsers.length})`));
+  for (const d of r.browsers) {
+    body.appendChild(el("div", { class: "admin-msg" },
+      el("strong", {}, `${d.name} · @${d.user}${d.you ? " (this browser)" : ""}`),
+      el("small", {}, "Approved " + when(d.added)),
+      d.you ? null : btn("Remove", () => act2("untrust", { id: d.id }, "Removed."), "danger-text")));
+  }
+
+  body.appendChild(el("h3", {}, `Banned browsers (${r.bans.length})`));
+  if (!r.bans.length) body.appendChild(el("p", { class: "hint" }, "None."));
+  for (const b of r.bans) {
+    body.appendChild(el("div", { class: "admin-msg" },
+      el("strong", {}, `${b.name || "Browser"} · @${b.user || "?"}`),
+      el("small", {}, `IP ${b.ip || "?"} · ${b.why || ""} · ${when(b.ts)}`),
+      btn("Unban", () => act2("unban-browser", { id: b.id }, "Unbanned."))));
+  }
+
+  body.appendChild(el("h3", {}, "Admin activity"));
+  for (const e of r.log) body.appendChild(el("div", { class: "admin-msg" }, el("small", {}, when(e.ts)), el("div", {}, e.text)));
 }
 
 // ---------- reports ----------

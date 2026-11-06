@@ -68,7 +68,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
         setReady(true);
       } else if (msg.type === "message") {
         onMessage(msg);
-      } else if (msg.type === "announce" || msg.type === "mirror") {
+      } else if (msg.type === "announce" || msg.type === "mirror" || msg.type === "admin-request") {
         if (onEvent) onEvent(msg);
       } else if (msg.type === "error" && msg.error && /banned/i.test(msg.error)) {
         stopped = true;
@@ -151,7 +151,8 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
     if (stopped || mode !== "http") return;
     try {
       if (!token) await signIn();
-      const { messages } = await call("poll", cursor ? { after: cursor } : {});
+      const { messages, events } = await call("poll", cursor ? { after: cursor } : {});
+      if (events && onEvent) for (const ev of events) try { onEvent(ev); } catch {}
       httpRetry = 0;
       setReady(true);
       if (messages.length) boost(20000);
