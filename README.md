@@ -184,7 +184,7 @@ powershell -ExecutionPolicy Bypass -File server\install.ps1 -Admin yourname
 
 Then put the `PRIMARY_KEY=…` line it prints into `relay/wrangler.toml` under `[vars]` and redeploy the backup relay.
 
-**Admin access** needs two things: the admin account's own key (tied to it the first time the relay sees that account, saved as `adminPins` in `config.json`), and a 6-digit code from an authenticator app. Setup writes the app's setup key to `data\admin-2fa.txt`; add it to your phone and delete the file. Five wrong codes lock the panel for 15 minutes, and each code works only once. Lost your phone? Run setup again on the PC with `--reset-2fa`. Moved your admin account to a new key? Use `--reset-admin-key`. For calls through strict networks, forward UDP and TCP 3478 and UDP 49160–49200 on your router to the PC.
+**Admin access** is tied to the admin account's own key (pinned in `config.json` the first time the relay sees that account). On top of that, only **trusted browsers** open the admin panel directly: each keeps a device key it can't export, and proves itself by signing the connection's challenge. The first browser is trusted with a one-time setup code the relay writes to `data\device-setup-code.txt`. Any other browser needs the 6-digit code shown on a trusted browser (Admin panel → **Devices & codes**), and can be trusted from there. Five wrong codes lock the panel for 15 minutes, and each code works once.
 
 On other systems: `cd server && npm ci && node setup.mjs data --admin yourname --cloudflared "$(which cloudflared)" && node server.js data`.
 

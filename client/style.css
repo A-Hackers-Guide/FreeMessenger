@@ -377,3 +377,6 @@ body.panel-open #app { visibility: hidden; }
 .bar.styled .typing { color: inherit; }
 .admin-code { max-width: 320px; margin: 40px auto; display: grid; gap: 8px; text-align: center; }
 .code-input { font: 600 28px/1.2 ui-monospace, Menlo, monospace; letter-spacing: .3em; text-align: center; }
+.trust-row { font-size: 14px; display: flex; gap: 8px; align-items: center; justify-content: center; }
+.code-card { max-width: 320px; text-align: center; gap: 4px; }
+.big-code { font: 700 40px/1.2 ui-monospace, Menlo, monospace !important; letter-spacing: .08em; }

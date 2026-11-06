@@ -187,7 +187,49 @@ function checkCode(code) {
 }
 
 const UNLOCK_MS = 8 * 3600e3;
-const httpUnlocks = new Map(); // HTTP session token -> unlocked until
+const httpUnlocks = new Map(); // HTTP session token -> { unlockedUntil, trusted }
+
+// ---------- trusted devices ----------
+//
+// A browser the admin trusts keeps a signing key it can't export (WebCrypto,
+// non-extractable). It proves itself by signing this connection's sign-in
+// challenge, and then needs no code. It can also show the current code, to
+// sign in somewhere else.
+//
+// The first device is added with a one-time setup code that the relay writes
+// to data/device-setup-code.txt (valid for an hour) whenever no device is trusted.
+
+const trustedDevices = () => kvGet("trustedDevices", []);
+let setupCode = null; // { code, until }
+
+function makeSetupCode() {
+  if (trustedDevices().length) { setupCode = null; return; }
+  if (setupCode && setupCode.until > Date.now()) return;
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const code = Array.from(nodeCrypto.randomBytes(8), (b) => alphabet[b % alphabet.length]).join("");
+  setupCode = { code, until: Date.now() + 3600e3 };
+  fs.writeFileSync(path.join(DATA, "device-setup-code.txt"),
+    `FreeMessenger: code to trust your first admin browser\r\n\r\n${code}\r\n\r\nValid until ${new Date(setupCode.until).toLocaleString()}. Works once.\r\n`, { mode: 0o600 });
+  event("No trusted admin browser yet: wrote a one-time setup code to device-setup-code.txt");
+}
+
+function checkSetupCode(code) {
+  if (!setupCode || setupCode.until < Date.now()) return false;
+  const c = String(code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (c.length !== setupCode.code.length || !nodeCrypto.timingSafeEqual(Buffer.from(c), Buffer.from(setupCode.code))) return false;
+  setupCode = null;
+  try { fs.unlinkSync(path.join(DATA, "device-setup-code.txt")); } catch {}
+  return true;
+}
+
+function addDevice(dev, name) {
+  if (!dev || typeof dev.id !== "string" || !/^[0-9a-f]{32}$/.test(dev.id) || !S.isPublicJwk(dev.pub)) return false;
+  const list = trustedDevices().filter((d) => d.id !== dev.id);
+  list.push({ id: dev.id, pub: { kty: "EC", crv: "P-256", x: dev.pub.x, y: dev.pub.y }, name: String(dev.name || "Browser").slice(0, 80), added: Date.now(), by: name });
+  kvSet("trustedDevices", list.slice(-10));
+  event(`@${name} trusted a new admin browser: ${String(dev.name || "Browser").slice(0, 80)}`);
+  return true;
+}
 
 const flags = (a) => ({ admin: isAdmin(a), proxy: isAdmin(a) || !!a.proxy, primary: true });
 
@@ -317,14 +359,42 @@ async function op(a, type, msg, sess) {
       if (ADMINS.includes(a.username)) event(`Refused admin to @${a.username}: the key doesn't match the pinned admin key`);
       return { error: "Only the admin can do that." };
     }
+    // A trusted browser signs this connection's challenge: no code needed.
+    if (msg.action === "device-unlock") {
+      const d = trustedDevices().find((x) => x.id === msg.deviceId);
+      if (!d || !sess.nonce || !(await S.verify(d.pub, msg.sig, "fm-admin-device:" + sess.nonce))) return { error: "This browser isn't trusted.", needCode: true };
+      sess.unlockedUntil = Date.now() + UNLOCK_MS;
+      sess.trusted = d.id;
+      return { ok: true, trusted: true };
+    }
     if (msg.action === "unlock") {
-      const r = checkCode(msg.code);
+      if (Date.now() < unlockFailures.until) return checkCode("");
+      const viaSetup = checkSetupCode(msg.code);
+      const r = viaSetup ? { ok: true } : checkCode(msg.code);
       if (r.error) { event(`Wrong admin code for @${a.username}`); return r; }
       sess.unlockedUntil = Date.now() + UNLOCK_MS;
-      event(`Admin panel unlocked by @${a.username}`);
+      // A first-time setup code always trusts this browser; a normal code does if asked.
+      if ((viaSetup || msg.trust) && msg.device && addDevice(msg.device, a.username)) sess.trusted = msg.device.id;
+      event(`Admin panel unlocked by @${a.username}${sess.trusted ? " (browser now trusted)" : ""}`);
+      return { ok: true, trusted: !!sess.trusted };
+    }
+    if (!sess || !(sess.unlockedUntil > Date.now())) {
+      makeSetupCode();
+      return { error: trustedDevices().length ? "Enter the code shown on your trusted browser." : "Enter the setup code from the home PC.", needCode: true, firstDevice: !trustedDevices().length };
+    }
+    if (msg.action === "current-code") {
+      if (!sess.trusted || !trustedDevices().some((d) => d.id === sess.trusted)) return { error: "Only a trusted browser can show codes." };
+      if (!config.adminTotp) return { error: "The admin code isn't set up on the home server." };
+      const now = Date.now() / 1000;
+      return { code: totpAt(config.adminTotp, Math.floor(now / TOTP_STEP)), left: Math.ceil(TOTP_STEP - (now % TOTP_STEP)) };
+    }
+    if (msg.action === "devices") return { devices: trustedDevices().map((d) => ({ id: d.id, name: d.name, added: d.added, current: d.id === sess.trusted })) };
+    if (msg.action === "untrust") {
+      kvSet("trustedDevices", trustedDevices().filter((d) => d.id !== msg.id));
+      if (sess.trusted === msg.id) sess.trusted = null;
+      event(`@${a.username} stopped trusting an admin browser`);
       return { ok: true };
     }
-    if (!sess || !(sess.unlockedUntil > Date.now())) return { error: "Enter the code from your authenticator app.", needCode: true };
     try { return await admin(a.username, msg); } catch (e) { return { error: e.message }; }
   }
   return null;
@@ -508,9 +578,9 @@ async function httpOp(name, msg, ip) {
     return [200, { messages: [...rows.map((r) => JSON.parse(r.env)), ...eph] }];
   }
   if (msg.op === "ack") { ack(name, msg.items); return [200, { ok: true }]; }
-  const sess = { unlockedUntil: httpUnlocks.get(msg.token) || 0 };
+  const sess = Object.assign({ unlockedUntil: 0, trusted: null }, httpUnlocks.get(msg.token), { nonce: msg.token });
   const r = await op(user, msg.op, msg, sess);
-  if (sess.unlockedUntil) httpUnlocks.set(msg.token, sess.unlockedUntil);
+  if (sess.unlockedUntil) httpUnlocks.set(msg.token, { unlockedUntil: sess.unlockedUntil, trusted: sess.trusted });
   return r ? [200, r] : [400, { error: "unknown op" }];
 }
 
@@ -663,7 +733,7 @@ server.on("upgrade", async (req, socket, head) => {
 function onSocket(ws, name, ip) {
   const challenge = crypto.randomUUID();
   let authed = false;
-  const sess = { unlockedUntil: 0 };
+  const sess = { unlockedUntil: 0, trusted: null, nonce: challenge };
   ws.send(JSON.stringify({ type: "challenge", challenge }));
   ws.on("message", async (data) => {
     const raw = data.toString();
@@ -849,6 +919,8 @@ function importFromBackup(u) {
 
 pinAdmins();
 setInterval(pinAdmins, 60e3);
+makeSetupCode();
+setInterval(makeSetupCode, 60e3);
 
 server.listen(PORT, "127.0.0.1", async () => {
   log(`FreeMessenger relay on http://127.0.0.1:${PORT}, data in ${DATA}, ${(used / 1024 ** 3).toFixed(2)} GB of ${config.capGB || 100} GB used`);
