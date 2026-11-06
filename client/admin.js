@@ -7,6 +7,8 @@ import * as E2E from "./crypto.js";
 import * as F from "./files.js";
 import { clear } from "./compat.js";
 import * as Device from "./device.js";
+import * as BigFile from "./bigfile.js";
+import * as Relays from "./relays.js";
 
 const $ = (id) => document.getElementById(id);
 let ctx = null;          // { conn(), me(), toast() }
@@ -369,6 +371,15 @@ function drawConvos(wrap) {
 // shown here; anything else is downloaded, never opened, so a file can't
 // run anything in this page.
 async function openFile(p, row) {
+  if (p.big) {
+    try {
+      const r = await BigFile.save({ conn: ctx.conn(), base: Relays.get(), big: p.big, name: p.name || "file", type: p.type });
+      if (r === "streaming") ctx.toast("Downloading — your browser shows the progress.");
+    } catch (e) {
+      ctx.toast(e.message);
+    }
+    return;
+  }
   try {
     const r = await call("file", { fid: p.fid });
     const parts = [];
@@ -626,6 +637,9 @@ async function renderSettings(body) {
           if (r) { ctx.toast("Invite made: " + r.code); show("settings"); }
         } }, "Make invite")),
       invites,
+      el("h3", {}, "Big files (over 10 MB)"),
+      el("p", { class: "hint" }, "Kept on the home server only briefly, unless enough people download them in time."),
+      bigRulesForm(cfg),
       el("h3", {}, "Storage per person"),
       el("div", { class: "row" }, el("span", {}, "Default limit (GB, 0 = unlimited):"), quota),
       el("h3", {}, "Watch words"),
@@ -645,4 +659,27 @@ async function renderSettings(body) {
         const r = await call("backup").catch((e) => ctx.toast(e.message));
         if (r) { ctx.toast("Backed up (" + size(r.backup.bytes) + ")."); show("settings"); }
       } }, "Back up now")));
+}
+
+function bigRulesForm(cfg) {
+  const r = cfg.bigRules || {};
+  const num = (v, min, w) => el("input", { type: "number", min, value: String(v), style: `width:${w || 80}px` });
+  const ttl = num(r.ttlMin, 1);
+  const people = num(r.keepDownloads, 0);
+  const win = num(r.keepWindowMin, 1);
+  const days = num(r.keepDays, 0);
+  const save = () => call("set-settings", { bigRules: { ttlMin: ttl.value, keepDownloads: people.value, keepWindowMin: win.value, keepDays: days.value } })
+    .then(() => ctx.toast("Big file rules saved.")).catch((e) => ctx.toast(e.message));
+  [ttl, people, win, days].forEach((i) => (i.onchange = save));
+  const list = el("div", {});
+  for (const b of cfg.bigFiles || []) {
+    list.appendChild(el("div", { class: "admin-msg" },
+      el("small", {}, `@${b.owner} · ${size(b.size)} · ${b.downloads} downloads · ${!b.done ? "uploading" : b.kept ? (b.expires ? "kept until " + when(b.expires) : "kept forever") : "deleted " + when(b.expires)}`)));
+  }
+  return el("div", { class: "admin-form" },
+    el("div", { class: "row" }, el("span", {}, "Delete after (minutes):"), ttl),
+    el("div", { class: "row" }, el("span", {}, "…unless this many people download it:"), people),
+    el("div", { class: "row" }, el("span", {}, "…within (minutes):"), win),
+    el("div", { class: "row" }, el("span", {}, "…then keep it (days, 0 = forever):"), days),
+    el("p", { class: "hint" }, "Recent big files:"), list);
 }

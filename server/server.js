@@ -79,12 +79,20 @@ db.exec(`
     body TEXT NOT NULL, escrow TEXT, meta TEXT, hint TEXT
   );
   CREATE INDEX IF NOT EXISTS scheduled_at ON scheduled (at);
+  CREATE TABLE IF NOT EXISTS blobs (
+    bid TEXT PRIMARY KEY, owner TEXT NOT NULL, size INTEGER NOT NULL, chunks INTEGER NOT NULL,
+    stored INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+    finished INTEGER, expires INTEGER, kept INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS blob_downloads (bid TEXT NOT NULL, username TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (bid, username));
 `);
 // Columns added after the first release.
 {
   const cols = db.prepare("PRAGMA table_info(accounts)").all().map((c) => c.name);
   if (!cols.includes("quotaGB")) db.exec("ALTER TABLE accounts ADD COLUMN quotaGB REAL");
   if (!cols.includes("hideSeen")) db.exec("ALTER TABLE accounts ADD COLUMN hideSeen INTEGER DEFAULT 0");
+  const bcols = db.prepare("PRAGMA table_info(blobs)").all().map((c) => c.name);
+  for (const [c, t] of [["finished", "INTEGER"], ["expires", "INTEGER"], ["kept", "INTEGER NOT NULL DEFAULT 0"]]) if (!bcols.includes(c)) db.exec(`ALTER TABLE blobs ADD COLUMN ${c} ${t}`);
   if (!db.prepare("SELECT 1 FROM usage LIMIT 1").get()) {
     db.exec("INSERT OR REPLACE INTO usage (username, bytes) SELECT sender, SUM(size) FROM archive GROUP BY sender");
   }
@@ -103,14 +111,20 @@ const pub = (a) => ({ username: a.username, sigPub: JSON.parse(a.sigPub), ecdhPu
 
 function usedBytes() {
   const pages = q("PRAGMA page_count").get().page_count - q("PRAGMA freelist_count").get().freelist_count;
-  return pages * q("PRAGMA page_size").get().page_size;
+  return pages * q("PRAGMA page_size").get().page_size + (q("SELECT COALESCE(SUM(stored), 0) AS n FROM blobs").get().n || 0);
 }
 let used = usedBytes();
 // When storage gets near the cap, the oldest file pieces go first.
 function enforceCap() {
   used = usedBytes();
   if (used < CAP_BYTES * 0.95) return;
-  event(`Storage is ${(used / 1024 ** 3).toFixed(1)} GB of ${(CAP_BYTES / 1024 ** 3).toFixed(0)} GB: removing the oldest file pieces.`);
+  event(`Storage is ${(used / 1024 ** 3).toFixed(1)} GB of ${(CAP_BYTES / 1024 ** 3).toFixed(0)} GB: removing the oldest big files, then the oldest file pieces.`);
+  while (used > CAP_BYTES * 0.9) {
+    const old = q("SELECT bid FROM blobs ORDER BY created LIMIT 1").get();
+    if (!old) break;
+    removeBlob(old.bid);
+    used = usedBytes();
+  }
   while (used > CAP_BYTES * 0.9) {
     const r = q("DELETE FROM archive WHERE id IN (SELECT id FROM archive WHERE kind = 'chunk' ORDER BY ts LIMIT 2000)").run();
     used = usedBytes();
@@ -343,12 +357,137 @@ function sendScheduled() {
 }
 setInterval(sendScheduled, 10e3);
 
+// ---------- big files (up to 10 GB) ----------
+//
+// Files over 10 MB don't go through the message system. The sender's browser
+// encrypts them in 4 MB pieces with a one-time key and uploads them here once;
+// the message only carries that key. Everyone in the chat downloads the same
+// copy, so a file is stored once however many people get it.
+
+const BLOB_DIR = path.join(DATA, "blobs");
+fs.mkdirSync(BLOB_DIR, { recursive: true });
+const BLOB_CHUNK = 4 * 1024 * 1024;
+const MAX_BLOB = 10 * 1024 ** 3;
+const blobTokens = new Map(); // token -> { username, until }
+
+// How long big files stay (admin panel → Settings): deleted this many minutes
+// after the upload finishes, unless at least keepDownloads people (other than
+// the sender) download it within keepWindowMin minutes; then kept keepDays.
+const bigRules = () => Object.assign({ ttlMin: 5, keepDownloads: 2, keepWindowMin: 5, keepDays: 30 }, kvGet("bigRules", {}));
+
+function removeBlob(bid) {
+  const b = q("SELECT * FROM blobs WHERE bid = ?").get(bid);
+  if (!b) return;
+  try { fs.rmSync(path.join(BLOB_DIR, bid), { recursive: true, force: true }); } catch {}
+  q("DELETE FROM blobs WHERE bid = ?").run(bid);
+  if (b.done) q("UPDATE usage SET bytes = MAX(0, bytes - ?) WHERE username = ?").run(b.stored, b.owner);
+}
+
+function blobToken(name) {
+  for (const [t, v] of blobTokens) if (v.until < Date.now()) blobTokens.delete(t);
+  const token = S.randomHex(24);
+  blobTokens.set(token, { username: name, until: Date.now() + 12 * 3600e3 });
+  return token;
+}
+
+function blobUser(token) {
+  const t = blobTokens.get(token);
+  const a = t && t.until > Date.now() && getAccount(t.username);
+  return a && a.status !== "banned" ? a : null;
+}
+
+function blobStart(a, msg) {
+  const size = Number(msg.size);
+  if (!(size > 0 && size <= MAX_BLOB)) return { error: "Files can be up to 10 GB." };
+  const chunks = Math.ceil(size / BLOB_CHUNK);
+  const fresh = getAccount(a.username);
+  if (fresh.status === "frozen" || fresh.status === "pending" || fresh.timeoutUntil > Date.now()) return { error: "You can't send files right now." };
+  if (usageOf(a.username) + size > quotaBytes(fresh)) return { error: `That's more than your storage allows (${(quotaBytes(fresh) / 1024 ** 3).toFixed(0)} GB). Ask the admin for more.` };
+  if (used + size > CAP_BYTES * 0.95) return { error: "The server doesn't have room for that file. Tell the admin." };
+  const unfinished = q("SELECT COUNT(*) AS n FROM blobs WHERE owner = ? AND done = 0").get(a.username).n;
+  if (unfinished >= 5) return { error: "Finish your other uploads first." };
+  const bid = S.randomHex(16);
+  fs.mkdirSync(path.join(BLOB_DIR, bid));
+  q("INSERT INTO blobs (bid, owner, size, chunks, created) VALUES (?, ?, ?, ?, ?)").run(bid, a.username, size, chunks, Date.now());
+  return { bid, chunk: BLOB_CHUNK, chunks };
+}
+
+function blobFinish(a, bid) {
+  const b = q("SELECT * FROM blobs WHERE bid = ? AND owner = ?").get(String(bid || ""), a.username);
+  if (!b) return { error: "No such upload." };
+  if (b.done) return { ok: true };
+  for (let i = 0; i < b.chunks; i++) if (!fs.existsSync(path.join(BLOB_DIR, b.bid, String(i)))) return { error: `Piece ${i + 1} is missing.`, missing: i };
+  const now = Date.now();
+  q("UPDATE blobs SET done = 1, finished = ?, expires = ? WHERE bid = ?").run(now, now + bigRules().ttlMin * 60e3, b.bid);
+  q("INSERT INTO usage (username, bytes) VALUES (?, ?) ON CONFLICT(username) DO UPDATE SET bytes = bytes + excluded.bytes").run(a.username, b.stored);
+  used = usedBytes();
+  return { ok: true };
+}
+
+// Expired big files go, and so do uploads abandoned for 6 hours.
+setInterval(() => {
+  const now = Date.now();
+  for (const b of q("SELECT bid FROM blobs WHERE (done = 1 AND expires IS NOT NULL AND expires < ?) OR (done = 0 AND created < ?)").all(now, now - 6 * 3600e3)) removeBlob(b.bid);
+}, 15e3);
+
+// Someone (not the sender) finished downloading: maybe keep the file longer.
+function countDownload(b, name) {
+  if (name === b.owner) return;
+  q("INSERT OR IGNORE INTO blob_downloads (bid, username, ts) VALUES (?, ?, ?)").run(b.bid, name, Date.now());
+  if (b.kept) return;
+  const r = bigRules();
+  const since = (b.finished || b.created);
+  const n = q("SELECT COUNT(*) AS n FROM blob_downloads WHERE bid = ? AND ts <= ?").get(b.bid, since + r.keepWindowMin * 60e3).n;
+  if (r.keepDownloads > 0 && n >= r.keepDownloads) {
+    q("UPDATE blobs SET kept = 1, expires = ? WHERE bid = ?").run(r.keepDays > 0 ? since + r.keepDays * 86400e3 : null, b.bid);
+  }
+}
+
+async function blobHttp(req, res, token, bid, i) {
+  const a = blobUser(token);
+  if (!a) return reply(res, 403, { error: "This file link expired. Reopen the chat." });
+  const b = q("SELECT * FROM blobs WHERE bid = ?").get(bid);
+  if (!b || i >= b.chunks) return reply(res, 410, { error: "This file expired." });
+  const file = path.join(BLOB_DIR, bid, String(i));
+  if (req.method === "POST") {
+    if (b.owner !== a.username || b.done) return reply(res, 403, { error: "Not your upload." });
+    let body;
+    try { body = await readRaw(req, BLOB_CHUNK + 1024); } catch { return reply(res, 413, { error: "Piece too large." }); }
+    let before = 0;
+    try { before = fs.statSync(file).size; } catch {}
+    fs.writeFileSync(file, body);
+    q("UPDATE blobs SET stored = stored - ? + ? WHERE bid = ?").run(before, body.length, bid);
+    return reply(res, 200, { ok: true });
+  }
+  if (b.done && b.expires && b.expires < Date.now()) return reply(res, 410, { error: "This file expired." });
+  let stat;
+  // Not uploaded yet: the sender is still sending it, so try again shortly.
+  try { stat = fs.statSync(file); } catch { return reply(res, b.done ? 404 : 425, { error: b.done ? "That piece is gone." : "Not uploaded yet." }); }
+  if (i === b.chunks - 1) countDownload(b, a.username);
+  res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": stat.size, "Cache-Control": "private, max-age=86400", ...S.CORS });
+  fs.createReadStream(file).pipe(res);
+}
+
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const parts = [];
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error("too large")); req.destroy(); return; }
+      parts.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(parts)));
+    req.on("error", reject);
+  });
+}
+
 // ---------- storage per person ----------
 
 const usageOf = (name) => (q("SELECT bytes FROM usage WHERE username = ?").get(name) || { bytes: 0 }).bytes;
 function quotaBytes(a) {
   if (ADMINS.includes(a.username)) return Infinity;
-  const gb = a.quotaGB != null ? a.quotaGB : kvGet("defaultQuotaGB", 5);
+  const gb = a.quotaGB != null ? a.quotaGB : kvGet("defaultQuotaGB", 25);
   return gb > 0 ? gb * 1024 ** 3 : Infinity;
 }
 
@@ -414,6 +553,9 @@ async function op(a, type, msg, sess) {
   if (type === "history") return history(a.username, msg);
   if (type === "announcements") return { announcements: announcementsSince(msg.after) };
   if (type === "rename") return renameAccount(a, String(msg.name || "").toLowerCase());
+  if (type === "blob-token") return { token: blobToken(a.username) };
+  if (type === "blob-start") return blobStart(a, msg);
+  if (type === "blob-finish") return blobFinish(a, msg.bid);
   // Online / last seen. Like WhatsApp: if you hide yours, you can't see anyone's.
   if (type === "privacy") {
     q("UPDATE accounts SET hideSeen = ? WHERE username = ?").run(msg.hideSeen ? 1 : 0, a.username);
@@ -686,9 +828,8 @@ async function admin(me, msg) {
     }
     case "settings":
       return {
-        signupMode: signupMode(),
-      oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)),
-      checkTurn: !!(config.turn && publicIp) && Date.now() - lastTurnCheck > 30 * 60e3, defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
+        signupMode: signupMode(), defaultQuotaGB: kvGet("defaultQuotaGB", 25), watchWords: kvGet("watchWords", []), bigRules: bigRules(),
+        bigFiles: q("SELECT bid, owner, size, done, finished, expires, kept, (SELECT COUNT(*) FROM blob_downloads d WHERE d.bid = blobs.bid) AS downloads FROM blobs ORDER BY created DESC LIMIT 50").all(),
         invites: q("SELECT * FROM invites ORDER BY created DESC").all(), backup: lastBackup, backupDir: BACKUP_DIR,
       };
     case "set-settings": {
@@ -698,6 +839,15 @@ async function admin(me, msg) {
         syncSoon();
       }
       if (msg.defaultQuotaGB !== undefined) kvSet("defaultQuotaGB", Math.max(0, Number(msg.defaultQuotaGB) || 0));
+      if (msg.bigRules && typeof msg.bigRules === "object") {
+        const n = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Number(v))) : d);
+        const r = bigRules();
+        kvSet("bigRules", {
+          ttlMin: n(msg.bigRules.ttlMin, 1, 1440, r.ttlMin), keepDownloads: n(msg.bigRules.keepDownloads, 0, 1000, r.keepDownloads),
+          keepWindowMin: n(msg.bigRules.keepWindowMin, 1, 10080, r.keepWindowMin), keepDays: n(msg.bigRules.keepDays, 0, 3650, r.keepDays),
+        });
+        event(`@${me} changed the big file rules`);
+      }
       if (Array.isArray(msg.watchWords)) kvSet("watchWords", msg.watchWords.map((w) => String(w).trim().toLowerCase()).filter(Boolean).slice(0, 200));
       return { ok: true };
     }
@@ -933,6 +1083,10 @@ const server = http.createServer(async (req, res) => {
       const turn = config.turn && publicIp ? { ...config.turn, host: publicIp } : null;
       return reply(res, 200, { iceServers: [...S.STUN, ...(await S.coturnServers(turn, S.USERNAME.test(name) ? name : "guest"))] });
     }
+
+    // Big files: /api/blob/<token>/<file id>/<piece>
+    m = url.pathname.match(/^\/api\/blob\/([0-9a-f]{48})\/([0-9a-f]{32})\/(\d{1,6})$/);
+    if (m && (req.method === "GET" || req.method === "POST")) return blobHttp(req, res, m[1], m[2], Number(m[3]));
 
     // The web viewer: /p/<ticket>/page?u=… and /p/<ticket>/res?u=…
     m = url.pathname.match(/^\/p\/([0-9a-f]{40})\/(page|res)$/);

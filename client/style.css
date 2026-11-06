@@ -604,3 +604,7 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .qr-dialog { text-align: center; }
 .qr-code canvas { max-width: 260px; width: 100%; border-radius: 12px; }
 .qr-video { width: 100%; max-width: 320px; border-radius: 12px; }
+
+.gcall-grid[data-size="big"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); grid-auto-rows: minmax(100px, 1fr); }
+.gcall-grid[data-size="big"] .gtile b { width: 56px; height: 56px; font-size: 26px; }
+.big-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

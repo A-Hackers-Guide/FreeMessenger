@@ -14,6 +14,7 @@ import * as GroupCall from "./groupcall.js";
 import * as Stories from "./stories.js";
 import * as Games from "./games.js";
 import * as Extras from "./extras.js";
+import * as BigFile from "./bigfile.js";
 
 window.FM_LOADED = true;
 
@@ -155,6 +156,7 @@ async function connect() {
         if (flags.primary && c.relay !== Relays.BACKUP) {
           loadAnnouncements();
           syncDevice();
+          setTimeout(fetchPendingBig, 3000);
           if (settings.hideSeen) conn.op("privacy", { hideSeen: true });
           refreshPresence();
         }
@@ -415,6 +417,11 @@ function receiveMessage(id, env, p) {
       once: !!p.once && /^image\//.test(String(p.type || "")),
       vnote: !!p.vnote && /^video\//.test(String(p.type || "")),
     };
+    const big = BigFile.cleanBig(p.big);
+    if (big) {
+      m.file.big = big;
+      if (m.file.size <= BigFile.INLINE_MAX) setTimeout(() => fetchBig(id, m.mid, false), 300);
+    }
     files.get(m.file.fid).then((blob) => { if (blob) patchMessage(id, m.mid, { file: Object.assign({}, m.file, { ready: true }) }); });
   }
   if (m.game) m.game.players = [env.from];
@@ -728,7 +735,7 @@ function sendSpecial(id, fields) {
 }
 
 async function sendFile(id, file, extra = {}) {
-  if (file.size > F.MAX_FILE_BYTES) return toast(`Files can be up to ${F.humanSize(F.MAX_FILE_BYTES)}.`);
+  if (file.size > F.MAX_FILE_BYTES) return sendBigFile(id, file, extra);
   let blob = file;
   let type = file.type || "application/octet-stream";
   let dims = {};
@@ -766,14 +773,15 @@ async function deliver(id, m) {
       silent: m.silent || undefined, effect: m.effect || undefined, loc: m.loc || undefined, card: m.card || undefined };
     const payload = withGroup(id, m.file
       ? Object.assign(base, { kind: "file", fid: m.file.fid, name: m.file.name, type: m.file.type, size: m.file.size, n: m.file.n,
-          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined, once: m.file.once || undefined, vnote: m.file.vnote || undefined })
+          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined, once: m.file.once || undefined, vnote: m.file.vnote || undefined,
+          big: m.file.big || undefined })
       : m.poll ? Object.assign(base, { kind: "poll", poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi, quiz: m.poll.quiz } })
       : m.game ? Object.assign(base, { kind: "game", game: { type: m.game.type, players: [me.username] } })
       : m.sticker ? Object.assign(base, { kind: "sticker", sticker: { e: m.sticker.e } })
       : Object.assign(base, { kind: "text" }));
     const scheduled = m.at && m.at > Date.now() + 5000 && !m.file;
     let chunks = null;
-    if (m.file) {
+    if (m.file && !m.file.big) {
       const blob = await files.get(m.file.fid);
       if (!blob) return patchMessage(id, m.mid, { status: "sent", pendingTo: null, failed: true });
       chunks = await F.toChunks(blob);
@@ -1128,6 +1136,25 @@ function renderFile(id, m, bubble) {
         patchMessage(id, m.mid, { viewed: true });
       }, 500);
     };
+    return;
+  }
+  if (f.big && !f.ready) {
+    box.classList.add("loading", "big-file");
+    const label = document.createElement("span");
+    const icon = /^image\//.test(f.type) ? "🖼" : /^video\//.test(f.type) ? "🎬" : /^audio\//.test(f.type) ? "🎵" : "📦";
+    const state = bigState.get(f.big.bid);
+    label.textContent = f.expired ? `${icon} ${f.name} (${F.humanSize(f.size)}) — expired on the server`
+      : state ? `${icon} ${f.name} — ${state}`
+      : `${icon} ${f.name} (${F.humanSize(f.size)})`;
+    box.appendChild(label);
+    box.dataset.big = f.big.bid;
+    if (!f.expired && !state) {
+      const b = document.createElement("button");
+      b.className = "ghost small";
+      b.textContent = f.size <= BigFile.INLINE_MAX ? "Download" : "Save to device";
+      b.onclick = (e) => { e.stopPropagation(); fetchBig(id, m.mid, true); };
+      box.appendChild(b);
+    }
     return;
   }
   if (f.missing) {
@@ -2119,7 +2146,7 @@ async function getMedia(video) {
       : "This browser can't make calls. Texting still works.");
   }
   try {
-    return await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: call.facing } : false });
+    return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: video ? { facingMode: call.facing, width: { ideal: 1280 }, height: { ideal: 720 } } : false });
   } catch {
     if (video) {
       toast("Camera unavailable — using voice only.");
@@ -2651,7 +2678,11 @@ async function importHistory(all, quiet) {
     const list = loadChat(id);
     const m = Object.assign({ mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts }, cleanExtras(p));
     if (mine) m.status = "sent";
-    if (p.kind === "file") m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: true };
+    if (p.kind === "file") {
+      const big = BigFile.cleanBig(p.big);
+      m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: !big };
+      if (big) m.file.big = big;
+    }
     list.push(m);
     list.sort((a, b) => a.ts - b.ts);
     saveChat(id, list);
@@ -3394,7 +3425,11 @@ $("forward-send").onclick = async () => {
   if (!forwarding || !targets.length) return;
   const m = forwarding.m;
   for (const to of targets) {
-    if (m.file) {
+    if (m.file && m.file.big && !(await files.get(m.file.fid))) {
+      const fm = newOutgoing(to, { text: m.text, fwd: true, file: Object.assign({}, m.file, { fid: uuid(), ready: false }) });
+      addMessage(to, fm);
+      deliver(to, fm);
+    } else if (m.file) {
       const blob = await files.get(m.file.fid);
       if (!blob) { toast("That file isn't saved in this browser, so it can't be forwarded."); continue; }
       const f = new File([blob], m.file.name, { type: m.file.type });
@@ -3994,3 +4029,106 @@ $("attach-game-btn").onclick = startGame;
 $("attach-contact-btn").onclick = shareContact;
 $("story-btn").onclick = () => Stories.compose();
 $("broadcast-btn").onclick = () => openGroupDialog(null, "broadcast");
+
+// ---------- big files (over 10 MB, up to 10 GB) ----------
+
+const bigState = new Map(); // file id on the server -> "Uploading 40%" / "Downloading 12%"
+
+function showBigState(id, mid, bid, text) {
+  if (text) bigState.set(bid, text); else bigState.delete(bid);
+  const m = findMessage(id, mid);
+  if (m && active === id) rerenderMessage(id, m);
+}
+
+async function sendBigFile(id, file, extra = {}) {
+  if (file.size > BigFile.MAX_BIG) return toast("Files can be up to 10 GB.");
+  if (!BigFile.supported()) return toast("Files over 10 MB need a newer browser.");
+  if (!conn || !conn.ready || !Relays.onPrimary()) return toast("Files over 10 MB go through the home server, which isn't reachable right now. Smaller files still work.");
+  let prep;
+  try {
+    prep = await BigFile.prepare(conn, file.size);
+  } catch (e) {
+    return toast(e.message);
+  }
+  const fid = uuid();
+  const inline = file.size <= BigFile.INLINE_MAX;
+  if (inline) await files.put(fid, file);
+  const m = newOutgoing(id, {
+    text: extra.caption || "",
+    file: { fid, name: file.name || "file", type: file.type || "application/octet-stream", size: file.size, n: prep.big.chunks, big: prep.big, ready: inline },
+  });
+  if (extra.fwd) m.fwd = true;
+  clearDraft();
+  addMessage(id, m);
+  // The message goes out right away; people can download while this uploads.
+  deliver(id, m);
+  const bid = prep.big.bid;
+  let last = 0;
+  try {
+    await BigFile.upload({
+      conn, base: Relays.get(), file, prep,
+      onProgress: (p) => {
+        if (Date.now() - last < 500 && p < 1) return;
+        last = Date.now();
+        if (inline) showSendProgress(m.mid, p);
+        else showBigState(id, m.mid, bid, `Uploading ${Math.round(p * 100)}%`);
+      },
+    });
+    showBigState(id, m.mid, bid, null);
+    toast(`"${m.file.name}" is uploaded. The server keeps it for ${bigKeepText()}.`);
+  } catch (e) {
+    showBigState(id, m.mid, bid, null);
+    patchMessage(id, m.mid, { failed: true });
+    toast(`"${m.file.name}" didn't finish uploading: ${e.message}`);
+  }
+}
+
+const bigKeepText = () => "a few minutes unless people download it";
+
+const bigBusy = new Set();
+async function fetchBig(id, mid, userAsked) {
+  const m = findMessage(id, mid);
+  if (!m || !m.file || !m.file.big || m.file.ready || bigBusy.has(m.file.big.bid)) return;
+  if (!conn || !conn.ready || !Relays.onPrimary()) {
+    if (userAsked) toast("Big files come from the home server, which isn't reachable right now.");
+    return;
+  }
+  const f = m.file;
+  bigBusy.add(f.big.bid);
+  let last = 0;
+  const progress = (p) => {
+    if (Date.now() - last < 500 && p < 1) return;
+    last = Date.now();
+    showBigState(id, mid, f.big.bid, `Downloading ${Math.round(p * 100)}%`);
+  };
+  try {
+    if (f.size <= BigFile.INLINE_MAX) {
+      const blob = await BigFile.fetchAll({ conn, base: Relays.get(), big: f.big, type: f.type, onProgress: progress });
+      await files.put(f.fid, blob);
+      bigState.delete(f.big.bid);
+      patchMessage(id, mid, { file: Object.assign({}, f, { ready: true }) });
+    } else {
+      const how = await BigFile.save({ conn, base: Relays.get(), big: f.big, name: f.name, type: f.type, onProgress: progress });
+      bigState.delete(f.big.bid);
+      if (how === "streaming") toast("Downloading — your browser shows the progress.");
+      else if (how === "saved") toast(`Saved "${f.name}".`);
+      rerenderMessage(id, findMessage(id, mid));
+    }
+  } catch (e) {
+    bigState.delete(f.big.bid);
+    if (/expired/.test(e.message)) patchMessage(id, mid, { file: Object.assign({}, f, { expired: true }) });
+    else rerenderMessage(id, findMessage(id, mid));
+    if (userAsked || !/expired/.test(e.message)) toast(e.message);
+  } finally {
+    bigBusy.delete(f.big.bid);
+  }
+}
+
+// Files that arrived while the home server wasn't reachable: try again once it is.
+function fetchPendingBig() {
+  for (const id of Object.keys(chats)) {
+    for (const m of loadChat(id).slice(-50)) {
+      if (m.file && m.file.big && !m.file.ready && !m.file.expired && !m.mine && m.file.size <= BigFile.INLINE_MAX) fetchBig(id, m.mid, false);
+    }
+  }
+}
