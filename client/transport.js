@@ -25,7 +25,7 @@ export function request(url, body, timeout = 20000) {
   });
 }
 
-export function createConnection({ relay, username, sign, store, onMessage, onState, onFatal, onFlags }) {
+export function createConnection({ relay, username, sign, store, onMessage, onState, onFatal, onFlags, onEvent }) {
   const flagsFrom = (m) => ({ admin: !!m.admin, proxy: !!m.proxy, primary: !!m.primary });
   let mode = null;
   let stopped = false;
@@ -68,6 +68,8 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
         setReady(true);
       } else if (msg.type === "message") {
         onMessage(msg);
+      } else if (msg.type === "announce") {
+        if (onEvent) onEvent(msg);
       } else if (msg.type === "error" && msg.error && /banned/i.test(msg.error)) {
         stopped = true;
         onFatal(msg.error);

@@ -49,6 +49,9 @@ export default {
       if (!USERNAME.test(name)) return json({ error: "Usernames are 3-20 characters: a-z, 0-9 and _" }, 400);
       if (RESERVED.has(name)) return json({ error: "That username is reserved" }, 409);
       if (!isPublicJwk(body.sigPub) || !isPublicJwk(body.ecdhPub)) return json({ error: "bad keys" }, 400);
+      // Invite codes and approvals live on the home PC, so only open sign-ups work here.
+      const cfg = await (await registry(env).fetch("https://do/config")).json();
+      if (cfg.signupMode && cfg.signupMode !== "open") return json({ error: "Sign-ups are paused while the main server is off. Try again later." }, 403);
       return post(userStub(env, name), "/register", { username: name, sigPub: body.sigPub, ecdhPub: body.ecdhPub, ip: ipOf(request) }).then(withCors);
     }
 
@@ -70,6 +73,11 @@ export default {
       const body = await request.text();
       if (body.length > 2 * MAX_ENVELOPE_BYTES + 8192) return json({ error: "message too large" }, 413);
       return userStub(env, m[1]).fetch("https://do/http", { method: "POST", body, headers: { "X-IP": ipOf(request) } }).then(withCors);
+    }
+
+    if (url.pathname === "/api/signup") {
+      const cfg = await (await registry(env).fetch("https://do/config")).json();
+      return json({ mode: cfg.signupMode || "open" });
     }
 
     if (url.pathname === "/api/vapid") return userStub(env, VAPID).fetch("https://do/vapid-public").then(withCors);
@@ -136,7 +144,7 @@ async function sync(request, env) {
   if (!body) return json({ error: "bad signature" }, 403);
 
   const reg = registry(env);
-  await post(reg, "/set", { primary: body.primary, admins: body.admins, turn: body.turn });
+  await post(reg, "/set", { primary: body.primary, admins: body.admins, turn: body.turn, signupMode: body.signupMode });
   let calls = 1;
 
   // Everything for one user goes in one call to their Durable Object.
@@ -211,11 +219,12 @@ export class User {
       // A home PC that hasn't checked in for 2 minutes is treated as off.
       return json(p && Date.now() - p.ts < 120e3 ? { url: p.url } : {});
     }
-    if (url.pathname === "/config") return json({ admins: (await s.get("admins")) || [], turn: await s.get("turn") });
+    if (url.pathname === "/config") return json({ admins: (await s.get("admins")) || [], turn: await s.get("turn"), signupMode: (await s.get("signupMode")) || "open" });
     const body = JSON.parse(await request.text() || "{}");
     if (url.pathname === "/set") {
       if (typeof body.primary === "string" && /^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1):\d+)$/i.test(body.primary)) await s.put("primary", { url: body.primary, ts: Date.now() });
       if (Array.isArray(body.admins)) await s.put("admins", body.admins.filter((n) => USERNAME.test(n)).slice(0, 10));
+      if (["open", "approval", "invite", "closed"].includes(body.signupMode)) await s.put("signupMode", body.signupMode);
       if (body.turn && typeof body.turn === "object") await s.put("turn", body.turn); else if (body.turn === null) await s.delete("turn");
       return json({ ok: true });
     }
@@ -530,6 +539,7 @@ export class User {
     const profile = await this.ctx.storage.get("profile");
     const mod = await this.mod();
     if (mod.status === "frozen") return { error: "Your account is frozen by the admin.", blocked: true };
+    if (mod.status === "pending") return { error: "Your account is waiting for the admin's approval.", blocked: true };
     if (mod.timeoutUntil > Date.now()) return { error: `You're timed out until ${new Date(mod.timeoutUntil).toUTCString()}.`, blocked: true, until: mod.timeoutUntil };
     const hint = msg.hint === "msg" || msg.hint === "call" ? msg.hint : undefined;
     if (!allowSend(this.limiter, profile.username, hint, cleanMeta(msg.meta))) return { error: "Slow down: one message a second.", slow: true };

@@ -123,6 +123,9 @@ async function show(name, reload) {
   else if (name === "messages") renderMessages(body);
   else if (name === "viewer") renderViewer(body);
   else if (name === "devices") renderDevices(body);
+  else if (name === "reports") renderReports(body);
+  else if (name === "alerts") renderAlerts(body);
+  else if (name === "settings") renderSettings(body);
   else renderActivity(body);
 }
 
@@ -140,6 +143,7 @@ async function act(action, user, extra, done) {
 
 function statusText(a) {
   const parts = [];
+  if (a.status === "pending") parts.push("Waiting for approval");
   if (a.status === "banned") parts.push("Banned");
   if (a.status === "frozen") parts.push("Frozen");
   if (a.timeoutUntil > Date.now()) parts.push("Timed out until " + when(a.timeoutUntil));
@@ -180,6 +184,7 @@ function accountCard(a) {
   const u = a.username;
   const actions = el("div", { class: "admin-actions" });
   const btn = (label, fn, cls) => actions.appendChild(el("button", { class: "ghost small " + (cls || ""), onclick: fn }, label));
+  if (a.status === "pending") btn("Approve", () => act("approve", u, {}, `@${u} can send messages now.`));
   btn("Read messages", () => { tab = "messages"; msgState.user = u; show("messages"); });
   if (!a.admin) {
     if (a.status === "banned") btn("Unban", () => act("unban", u, {}, `@${u} unbanned.`));
@@ -204,6 +209,10 @@ function accountCard(a) {
     if (a.admin) return ctx.toast("Admins always have the web viewer.");
     act("proxy", u, { on: !a.proxy }, a.proxy ? `@${u} can't use the web viewer now.` : `@${u} can use the web viewer.`);
   });
+  if (!a.admin) btn("Storage limit", () => {
+    const v = prompt(`Storage limit for @${u} in GB (0 = unlimited, empty = the default):`, a.quotaGB == null ? "" : String(a.quotaGB));
+    if (v !== null) act("quota", u, { gb: v.trim() === "" ? null : Number(v) }, "Storage limit saved.");
+  });
   btn("Note", () => {
     const n = prompt(`Private note about @${u} (only admins see it):`, a.note || "");
     if (n !== null) act("note", u, { note: n }, "Note saved.");
@@ -219,7 +228,8 @@ function accountCard(a) {
       fact("Real name", p.real), fact("Status", p.status), fact("About", p.bio),
       fact("Joined", when(a.created)), fact("Last seen", when(a.lastSeen)),
       fact("Last IP", a.lastIp), fact("Sign-up IP", a.signupIp),
-      fact("Sent", `${a.sent} messages · ${size(a.bytes)}`),
+      fact("Sent", `${a.sent} messages`),
+      fact("Storage", `${size(a.used)} of ${a.quota ? size(a.quota) : "unlimited"}`),
       fact("Made on", a.origin === "cf" ? "Backup relay" : "Home server"),
       fact("Note", a.note)),
     actions);
@@ -401,11 +411,13 @@ function renderActivity(body) {
   const pct = Math.min(100, (s.used / s.cap) * 100);
   body.append(
     el("div", { class: "admin-stats" },
+      stat("Open reports", s.openReports), stat("Waiting for approval", s.pending),
       stat("Accounts", s.accounts), stat("Online now", s.online), stat("Messages", s.messages),
       stat("Messages today", s.messagesToday), stat("Waiting to be delivered", s.waiting)),
     el("h3", {}, "Storage"),
     el("div", { class: "meter" }, el("span", { style: `width:${pct.toFixed(1)}%` })),
     el("p", { class: "hint" }, `${size(s.used)} of ${size(s.cap)} used${pct > 90 ? " — almost full: the oldest file pieces are removed first" : ""}.`),
+    el("p", { class: "hint" }, s.dbBackup ? `Last backup: ${when(s.dbBackup.ts)} (${size(s.dbBackup.bytes)})` : "No backup yet. Backups run every night at 3 AM (Settings tab → Back up now)."),
     el("h3", {}, "Connections"),
     el("p", { class: "hint" }, `Home server address: ${s.tunnel || "not up yet"}`),
     el("p", { class: "hint" }, s.backup ? `Last sync with the backup relay: ${when(s.backup.ts)} — ${s.backup.ok ? "OK" : "failed: " + s.backup.error}` : "Not synced with the backup relay yet."),
@@ -470,4 +482,154 @@ async function renderDevices(body) {
     clear(list);
     list.appendChild(el("p", { class: "error" }, e.message));
   }
+}
+
+// ---------- reports ----------
+
+async function renderReports(body) {
+  const box = el("div", {}, el("p", { class: "hint" }, "Loading…"));
+  body.append(el("p", { class: "hint" }, "Messages people reported. Each report includes the reported message and the chat around it, as the reporter's browser saw them."), box);
+  try {
+    const r = await call("reports");
+    clear(box);
+    if (!r.reports.length) box.appendChild(el("p", { class: "hint" }, "No reports."));
+    for (const rep of r.reports) {
+      let m = {};
+      let ctxList = [];
+      try { m = JSON.parse(rep.message || "{}"); } catch {}
+      try { ctxList = JSON.parse(rep.context || "[]"); } catch {}
+      const details = el("details", {}, el("summary", {}, `The chat around it (${ctxList.length} messages)`),
+        ctxList.map((x) => el("div", { class: "admin-msg" }, el("small", {}, `@${x.from} · ${when(x.ts)}`), el("div", {}, x.text || (x.file ? "📎 " + x.file : "")))));
+      box.appendChild(el("div", { class: "admin-card" + (rep.status === "done" ? " banned" : "") },
+        el("strong", {}, `@${rep.reporter} reported @${rep.reported}`),
+        el("small", {}, `${when(rep.ts)}${rep.status === "done" ? " · handled" : ""}`),
+        rep.reason ? el("div", {}, "Reason: " + rep.reason) : null,
+        el("div", { class: "admin-msg" }, el("small", {}, `@${m.from || rep.reported}${m.chat ? " in " + m.chat : ""} · ${when(m.ts)}`), el("div", {}, m.text || (m.file ? "📎 " + m.file : ""))),
+        details,
+        el("div", { class: "admin-actions" },
+          el("button", { class: "ghost small", onclick: () => { msgState.user = rep.reported; msgState.rows = []; show("messages"); } }, "Read their messages"),
+          el("button", { class: "ghost small", onclick: () => { show("accounts"); setTimeout(() => { const f = document.querySelector(".admin-filter"); if (f) { f.value = rep.reported; f.oninput(); } }, 50); } }, "Their account"),
+          el("button", { class: "ghost small", onclick: async () => { await call("resolve-report", { n: rep.n, open: rep.status === "done" }).catch((e) => ctx.toast(e.message)); show("reports"); } },
+            rep.status === "done" ? "Reopen" : "Mark handled"))));
+    }
+  } catch (e) {
+    clear(box);
+    box.appendChild(el("p", { class: "error" }, e.message));
+  }
+}
+
+// ---------- word alerts ----------
+//
+// The server can't read messages, so the words are checked here, in the
+// admin's browser, after decrypting the admin copies of the last 7 days.
+
+async function renderAlerts(body) {
+  const box = el("div", {}, el("p", { class: "hint" }, "Decrypting the last 7 days of messages and checking them…"));
+  body.append(el("p", { class: "hint" }, "Messages from the last 7 days that contain one of your watch words. Change the words on the Settings tab."), box);
+  try {
+    const r = await call("recent");
+    const words = r.watchWords || [];
+    clear(box);
+    if (!words.length) return box.appendChild(el("p", { class: "hint" }, "You haven't set any watch words yet (Settings tab)."));
+    await decryptRows(r.messages, r.keys);
+    const re = new RegExp("(" + words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "i");
+    const seen = new Set();
+    let hits = 0;
+    for (const row of r.messages) {
+      const p = plain.get(row.id);
+      const text = p && (p.text || p.name || "");
+      if (!text || !re.test(text)) continue;
+      const key = row.sender + ":" + (p.mid || row.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits++;
+      const line = el("div", {});
+      for (const part of text.split(re)) line.appendChild(re.test(part) && words.some((w) => w === part.toLowerCase()) ? el("mark", { class: "hl" }, part) : document.createTextNode(part));
+      box.appendChild(el("div", { class: "admin-msg" },
+        el("small", {}, `@${row.sender} → ${p.gid ? "a group" : "@" + row.recipient} · ${when(row.ts)}`), line,
+        el("button", { class: "link", onclick: () => { msgState.user = row.sender; msgState.rows = []; show("messages"); } }, "Open their messages")));
+    }
+    if (!hits) box.appendChild(el("p", { class: "hint" }, `No matches for: ${words.join(", ")}.`));
+  } catch (e) {
+    clear(box);
+    box.appendChild(el("p", { class: "error" }, e.message));
+  }
+}
+
+// ---------- settings: sign-ups, invites, storage, watch words, backups, announcements ----------
+
+const SITE = "https://a-hackers-guide.github.io/FreeMessenger/";
+
+async function renderSettings(body) {
+  let cfg;
+  try { cfg = await call("settings"); } catch (e) { return body.appendChild(el("p", { class: "error" }, e.message)); }
+
+  const mode = el("select", {},
+    el("option", { value: "open" }, "Anyone can sign up"),
+    el("option", { value: "approval" }, "Anyone, but I approve them before they can send"),
+    el("option", { value: "invite" }, "Only with an invite code"),
+    el("option", { value: "closed" }, "Nobody (closed)"));
+  mode.value = cfg.signupMode;
+  mode.onchange = () => call("set-settings", { signupMode: mode.value }).then(() => ctx.toast("Sign-ups updated.")).catch((e) => ctx.toast(e.message));
+
+  const invites = el("div", {});
+  const drawInvites = (list) => {
+    clear(invites);
+    for (const i of list) {
+      const link = SITE + "?invite=" + i.code;
+      invites.appendChild(el("div", { class: "admin-msg" },
+        el("strong", {}, i.code), el("small", {}, `Used ${i.used} of ${i.uses}${i.note ? " · " + i.note : ""} · ${when(i.created)}`),
+        el("div", { class: "wrap" }, link),
+        el("div", { class: "admin-actions" },
+          el("button", { class: "ghost small", onclick: () => navigator.clipboard.writeText(link).then(() => ctx.toast("Link copied.")) }, "Copy link"),
+          el("button", { class: "ghost small danger-text", onclick: async () => { await call("delete-invite", { code: i.code }); show("settings"); } }, "Delete"))));
+    }
+  };
+  drawInvites(cfg.invites);
+  const uses = el("input", { type: "number", min: "1", max: "1000", value: "1", style: "width:90px" });
+  const note = el("input", { placeholder: "Who it's for (optional)" });
+
+  const quota = el("input", { type: "number", min: "0", step: "0.5", value: String(cfg.defaultQuotaGB), style: "width:110px" });
+  quota.onchange = () => call("set-settings", { defaultQuotaGB: Number(quota.value) }).then(() => ctx.toast("Default storage limit saved."));
+
+  const words = el("textarea", { rows: "4", placeholder: "One word or phrase per line" });
+  words.value = cfg.watchWords.join("\n");
+
+  const ann = el("textarea", { rows: "3", maxlength: "2000", placeholder: "Message for everyone" });
+  const annList = el("div", {});
+  call("announcements").then((r) => {
+    for (const a of r.announcements) annList.appendChild(el("div", { class: "admin-msg" }, el("small", {}, when(a.ts)), el("div", {}, a.text),
+      el("button", { class: "link danger-text", onclick: async () => { await call("delete-announcement", { n: a.n }); show("settings"); } }, "Delete")));
+  }).catch(() => {});
+
+  body.append(
+    el("div", { class: "admin-form" },
+      el("h3", {}, "Sign-ups"), mode,
+      el("p", { class: "hint" }, "While the home server is off, sign-ups only work when this is set to “Anyone can sign up”."),
+      el("h3", {}, "Invite codes"),
+      el("div", { class: "row" }, el("span", {}, "Uses:"), uses, note,
+        el("button", { class: "primary small", onclick: async () => {
+          const r = await call("invite", { uses: Number(uses.value), note: note.value }).catch((e) => ctx.toast(e.message));
+          if (r) { ctx.toast("Invite made: " + r.code); show("settings"); }
+        } }, "Make invite")),
+      invites,
+      el("h3", {}, "Storage per person"),
+      el("div", { class: "row" }, el("span", {}, "Default limit (GB, 0 = unlimited):"), quota),
+      el("h3", {}, "Watch words"),
+      words,
+      el("button", { class: "ghost small", onclick: () => call("set-settings", { watchWords: words.value.split("\n") }).then(() => ctx.toast("Watch words saved.")) }, "Save watch words"),
+      el("h3", {}, "Announcement"),
+      ann,
+      el("button", { class: "primary small", onclick: async () => {
+        if (!ann.value.trim() || !confirm("Send this to everyone?")) return;
+        await call("announce", { text: ann.value }).then(() => { ctx.toast("Sent."); show("settings"); }).catch((e) => ctx.toast(e.message));
+      } }, "Send to everyone"),
+      annList,
+      el("h3", {}, "Backups"),
+      el("p", { class: "hint" }, `${cfg.backupDir ? "Every night at 3 AM to " + cfg.backupDir + ", keeping 14." : "No backup folder set."} ${cfg.backup ? "Last: " + when(cfg.backup.ts) + " (" + size(cfg.backup.bytes) + ")." : ""}`),
+      el("button", { class: "ghost small", onclick: async () => {
+        ctx.toast("Backing up…");
+        const r = await call("backup").catch((e) => ctx.toast(e.message));
+        if (r) { ctx.toast("Backed up (" + size(r.backup.bytes) + ")."); show("settings"); }
+      } }, "Back up now")));
 }

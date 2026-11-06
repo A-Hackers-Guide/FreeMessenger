@@ -34,6 +34,7 @@ Your friend does the same thing in their own browser. That's it.
 | 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute, block and clear history are in each chat's ⋮ menu. |
 | 🎨 **Make it yours** | Ready-made themes, an accent color, and a color, gradient or picture for each bar. Every chat can have its own background and animation (aurora, bubbles, stars, snow, hearts, waves, rain, confetti). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
 | 🗂 **Your history anywhere** | Messages are kept on the server, so a new browser can download your old chats (Settings → **Get my old messages**). |
+| 🚩 **Report** | Tap a message → **Report to admin** if something's wrong. |
 | 🌐 **Web viewer** | For people the admin allows: open links through the server in a safe viewer with scripts turned off. |
 
 Tap any message for its options (react, reply, copy, edit, delete).
@@ -183,6 +184,8 @@ powershell -ExecutionPolicy Bypass -File server\install.ps1 -Admin yourname
 ```
 
 Then put the `PRIMARY_KEY=…` line it prints into `relay/wrangler.toml` under `[vars]` and redeploy the backup relay.
+
+**Admin tools:** accounts (approve, freeze, time out, ban, remove, storage limits), reports, word alerts (checked in the admin's browser after decrypting), announcements to everyone, sign-up modes (open, approval, invite codes, closed), and nightly database backups at 3 AM to `-BackupFolder` (default `H:\FreeMessenger-backups`, last 14 kept).
 
 **Admin access** is tied to the admin account's own key (pinned in `config.json` the first time the relay sees that account). On top of that, only **trusted browsers** open the admin panel directly: each keeps a device key it can't export, and proves itself by signing the connection's challenge. The first browser is trusted with a one-time setup code the relay writes to `data\device-setup-code.txt`. Any other browser needs the 6-digit code shown on a trusted browser (Admin panel → **Devices & codes**), and can be trusted from there. Five wrong codes lock the panel for 15 minutes, and each code works once.
 
