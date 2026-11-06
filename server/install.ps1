@@ -58,8 +58,8 @@ if (-not $NoTurn) {
   @"
 docker rm -f freemessenger-turn 2>`$null | Out-Null
 docker run -d --name freemessenger-turn --restart unless-stopped ``
-  -p 3478:3478 -p 3478:3478/udp -p 49160-49200:49160-49200/udp ``
-  coturn/coturn -n --log-file=stdout --listening-port=3478 --min-port=49160 --max-port=49200 ``
+  -p 3478:3478 -p 3478:3478/udp -p 40000-40040:40000-40040/udp ``
+  coturn/coturn -n --log-file=stdout --listening-port=3478 --min-port=40000 --max-port=40040 ``
   '--external-ip=`$(detect-external-ip)' --realm=freemessenger --use-auth-secret '--static-auth-secret=$($cfg.turn.secret)' ``
   --fingerprint --no-cli --no-tls --no-dtls --no-multicast-peers ``
   --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255 ``
@@ -105,4 +105,4 @@ Write-Host ""
 Write-Host "Done. The relay starts whenever you sign in to Windows. Log: $data\relay.log"
 Write-Host "Put this line in relay/wrangler.toml under [vars] (it's a public key, safe to share):"
 $setupOut | Where-Object { $_ -like "PRIMARY_KEY=*" }
-if (-not $NoTurn) { Write-Host "For calls through strict networks, forward UDP+TCP 3478 and UDP 49160-49200 on your router to this PC." }
+if (-not $NoTurn) { Write-Host "For calls through strict networks, forward UDP+TCP 3478 and UDP 40000-40040 on your router to this PC." }
