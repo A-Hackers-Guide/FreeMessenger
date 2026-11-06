@@ -24,6 +24,10 @@ Your friend does the same thing in their own browser. That's it.
 | | |
 |---|---|
 | 💬 **Chat** | Texts, replies, emoji reactions, editing and deleting (for everyone), "typing…", and Sent / Delivered / Read |
+| 📊 **Polls, pins and stars** | Polls (one or several answers), pin a message for everyone at the top of a chat, star messages to find later (⋯ → **Starred messages**), and forward anything to other chats |
+| 😊 **Emoji and stickers** | An emoji picker, animated stickers, and your own stickers made from pictures |
+| 🔗 **Link previews** | Title, description and picture for links, fetched once by the server so the people you send it to never contact the site |
+| ⏰ **Scheduled messages** | Write now, send later. The server sends it at that time even if your device is off. |
 | 📷 **Share** | Photos, videos, voice messages and any file up to 10 MB. Paste or drag them into a chat. |
 | 👥 **Groups** | Up to 32 people. Rename them, add people, or leave. |
 | 📞 **Call** | Voice and video calls, with screen sharing and front/back camera switching |

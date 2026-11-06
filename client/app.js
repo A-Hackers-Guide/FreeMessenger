@@ -9,6 +9,7 @@ import * as Relays from "./relays.js";
 import * as Look from "./look.js";
 import * as Admin from "./admin.js";
 import * as Browser from "./browser.js";
+import { EMOJI, STICKERS } from "./emoji.js";
 
 window.FM_LOADED = true;
 
@@ -235,18 +236,20 @@ let lastBlockedToast = 0;
 
 // Messages people should hear about wake the other person's device; edits,
 // receipts, file pieces and typing don't.
-const pushHint = (p) => (p.kind === "text" || p.kind === "file" || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" ? "call" : undefined);
+const CHAT_KINDS = ["text", "file", "poll", "sticker"];
+const pushHint = (p) => (CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" ? "call" : undefined);
 
 // Every saved message also carries an "admin copy", encrypted for the site
 // admin, who can read it in the admin panel (people are told this when they
 // sign up). Typing and call setup aren't saved, so they don't get one.
-async function sendPayload(to, payload, ephemeral = false) {
+async function sendPayload(to, payload, ephemeral = false, opts = {}) {
   try {
     const body = await E2E.encrypt(me, await getKey(to), payload);
     const extra = {};
+    if (opts.at) extra.at = opts.at;
     if (!ephemeral) {
       if (adminKey) extra.escrow = await E2E.encrypt(me, adminKey.ecdhPub, payload);
-      const k = payload.kind === "chunk" ? "chunk" : payload.kind === "text" || payload.kind === "file" ? "msg" : "control";
+      const k = payload.kind === "chunk" ? "chunk" : CHAT_KINDS.indexOf(payload.kind) !== -1 ? "msg" : "control";
       extra.meta = { k, fid: payload.fid, i: payload.i, n: payload.n, mid: payload.mid };
     }
     for (let tries = 0; ; tries++) {
@@ -307,7 +310,25 @@ async function handleIncoming(env) {
   switch (p.kind) {
     case "text":
     case "file":
+    case "poll":
+    case "sticker":
       return receiveMessage(id, env, p);
+    case "vote": {
+      const m = findMessage(id, p.mid);
+      if (!m || !m.poll) return;
+      const votes = Object.assign({}, m.poll.votes);
+      const picks = (Array.isArray(p.choices) ? p.choices : []).map(Number).filter((n) => n >= 0 && n < m.poll.options.length);
+      if (picks.length) votes[env.from] = m.poll.multi ? picks.slice(0, 10) : picks.slice(0, 1); else delete votes[env.from];
+      return patchMessage(id, p.mid, { poll: Object.assign({}, m.poll, { votes }) });
+    }
+    case "pin": {
+      const c = chats[id];
+      if (!c) return;
+      c.pinned = p.on ? String(p.mid) : null;
+      saveChats();
+      if (active === id) renderHeader();
+      return systemMessage(id, `${shortName(env.from)} ${p.on ? "pinned" : "unpinned"} a message`, env.ts);
+    }
     case "edit": {
       const m = findMessage(id, p.mid);
       if (m && m.from === env.from && !m.deleted) patchMessage(id, p.mid, { text: String(p.text).slice(0, 8000), edited: env.ts });
@@ -348,10 +369,12 @@ function receiveMessage(id, env, p) {
   };
   if (p.reply && p.reply.mid) m.reply = { mid: String(p.reply.mid), from: String(p.reply.from || ""), text: String(p.reply.text || "").slice(0, 200) };
   if (p.exp) m.exp = Math.min(Number(p.exp), env.ts + 31 * 86400e3);
+  Object.assign(m, cleanExtras(p));
   if (p.kind === "file") {
     m.file = {
       fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""),
       size: Number(p.size) || 0, n: Number(p.n) || 1, w: p.w, h: p.h, voice: !!p.voice, duration: p.duration,
+      sticker: !!p.sticker && /^image\//.test(String(p.type || "")),
     };
     files.get(m.file.fid).then((blob) => { if (blob) patchMessage(id, m.mid, { file: Object.assign({}, m.file, { ready: true }) }); });
   }
@@ -372,6 +395,27 @@ async function handleChunk(env, p) {
   conn.ack(done.envs);
   const m = loadChat(id).find((x) => x.file && x.file.fid === p.fid);
   if (m) patchMessage(id, m.mid, { file: Object.assign({}, m.file, { ready: true }) });
+}
+
+// Polls, stickers, link previews and "forwarded", as received. Never trusted
+// beyond what's needed to show them.
+function cleanExtras(p) {
+  const out = {};
+  if (p.kind === "poll" && p.poll && typeof p.poll.q === "string" && Array.isArray(p.poll.options)) {
+    const options = p.poll.options.map((o) => String(o).slice(0, 100)).filter(Boolean).slice(0, 10);
+    if (options.length >= 2) out.poll = { q: p.poll.q.slice(0, 300), options, multi: !!p.poll.multi, votes: {} };
+  }
+  if (p.kind === "sticker" && p.sticker && typeof p.sticker.e === "string") {
+    const known = STICKERS.find((x) => x[0] === p.sticker.e);
+    if (known) out.sticker = { e: known[0], anim: known[1] };
+  }
+  const pv = p.preview;
+  if (pv && typeof pv.url === "string" && /^https?:\/\//.test(pv.url) && typeof pv.title === "string") {
+    out.preview = { url: pv.url.slice(0, 2000), title: pv.title.slice(0, 200), desc: String(pv.desc || "").slice(0, 300), site: String(pv.site || "").slice(0, 100) };
+    if (typeof pv.image === "string" && pv.image.length < 90000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(pv.image)) out.preview.image = pv.image;
+  }
+  if (p.fwd) out.fwd = true;
+  return out;
 }
 
 // ---------- groups ----------
@@ -472,6 +516,9 @@ function ensureChat(id) {
 
 function previewText(m) {
   if (m.deleted) return "Message deleted";
+  if (m.poll) return "📊 " + m.poll.q;
+  if (m.sticker) return m.sticker.e + " Sticker";
+  if (m.file && m.file.sticker) return "🖼 Sticker";
   if (m.file) {
     const kind = m.file.voice ? "🎤 Voice message" : /^image\//.test(m.file.type) ? "📷 Photo" : /^video\//.test(m.file.type) ? "🎬 Video" : "📎 " + m.file.name;
     return m.text ? kind + ": " + m.text : kind;
@@ -548,8 +595,32 @@ function newOutgoing(id, fields) {
   return m;
 }
 
-function sendText(id, text) {
-  const m = newOutgoing(id, { text });
+const LINK = /\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/i;
+
+function sendText(id, text, extra) {
+  const m = newOutgoing(id, Object.assign({ text }, extra));
+  clearDraft();
+  const link = text.match(LINK);
+  // A preview is fetched by the home server, once, and sent inside the
+  // message, so the people receiving it never contact the site.
+  if (link && Relays.onPrimary() && conn && conn.ready) {
+    m.status = "sending";
+    addMessage(id, m);
+    Promise.race([conn.op("preview", { url: link[0] }), sleep(5000).then(() => ({}))]).then((r) => {
+      if (r && r.preview) {
+        m.preview = cleanExtras({ preview: r.preview }).preview;
+        patchMessage(id, m.mid, { preview: m.preview });
+      }
+      deliver(id, m);
+    });
+    return;
+  }
+  addMessage(id, m);
+  deliver(id, m);
+}
+
+function sendSpecial(id, fields) {
+  const m = newOutgoing(id, fields);
   clearDraft();
   addMessage(id, m);
   deliver(id, m);
@@ -560,7 +631,7 @@ async function sendFile(id, file, extra = {}) {
   let blob = file;
   let type = file.type || "application/octet-stream";
   let dims = {};
-  if (/^image\//.test(type) && !extra.voice) {
+  if (/^image\//.test(type) && !extra.voice && !extra.sticker) {
     const p = await F.preparePhoto(file);
     blob = p.blob;
     type = p.type || type;
@@ -572,8 +643,9 @@ async function sendFile(id, file, extra = {}) {
   const m = newOutgoing(id, {
     text: extra.caption || "",
     file: Object.assign({ fid, name: file.name || extra.name || "file", type, size: blob.size, n, ready: true }, dims,
-      extra.voice ? { voice: true, duration: extra.duration } : {}),
+      extra.voice ? { voice: true, duration: extra.duration } : {}, extra.sticker ? { sticker: true } : {}),
   });
+  if (extra.fwd) m.fwd = true;
   clearDraft();
   addMessage(id, m);
   deliver(id, m);
@@ -587,11 +659,14 @@ async function deliver(id, m) {
   delivering.add(m.mid);
   try {
     const to = m.pendingTo || recipients(id);
-    const base = { mid: m.mid, text: m.text, reply: m.reply, exp: m.exp };
+    const base = { mid: m.mid, text: m.text, reply: m.reply, exp: m.exp, preview: m.preview, fwd: m.fwd || undefined };
     const payload = withGroup(id, m.file
       ? Object.assign(base, { kind: "file", fid: m.file.fid, name: m.file.name, type: m.file.type, size: m.file.size, n: m.file.n,
-          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration })
+          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined })
+      : m.poll ? Object.assign(base, { kind: "poll", poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi } })
+      : m.sticker ? Object.assign(base, { kind: "sticker", sticker: { e: m.sticker.e } })
       : Object.assign(base, { kind: "text" }));
+    const scheduled = m.at && m.at > Date.now() + 5000 && !m.file;
     let chunks = null;
     if (m.file) {
       const blob = await files.get(m.file.fid);
@@ -599,8 +674,10 @@ async function deliver(id, m) {
       chunks = await F.toChunks(blob);
     }
     const failed = [];
+    const sids = [];
     for (const name of to) {
-      let r = await sendPayload(name, payload);
+      let r = await sendPayload(name, payload, false, scheduled ? { at: m.at } : {});
+      if (r.scheduled) sids.push(r.sid);
       if (!r.error && chunks) {
         for (let i = 0; i < chunks.length && !r.error; i++) {
           r = await sendPayload(name, withGroup(id, { kind: "chunk", fid: m.file.fid, i, n: chunks.length, type: m.file.type, data: chunks[i] }));
@@ -609,6 +686,7 @@ async function deliver(id, m) {
       }
       if (r.error) failed.push(name);
     }
+    if (scheduled && !failed.length) return patchMessage(id, m.mid, { status: "scheduled", sids: (m.sids || []).concat(sids), pendingTo: null });
     patchMessage(id, m.mid, failed.length
       ? { status: "waiting", pendingTo: failed }
       : { status: m.status === "delivered" || m.status === "read" ? m.status : "sent", pendingTo: null });
@@ -629,6 +707,7 @@ function flushOutbox() {
 
 const statusLabel = (m) => {
   if (!m.mine || !m.status || m.deleted) return "";
+  if (m.status === "scheduled") return m.at > Date.now() ? "⏰ Scheduled for " + new Date(m.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Sent";
   return { sending: "Sending…", waiting: "Will send when you're back online", sent: "Sent", delivered: "Delivered", read: "Read" }[m.status] || "";
 };
 
@@ -936,6 +1015,12 @@ function renderMessage(id, m) {
   }
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+  if (m.fwd && !m.deleted) {
+    const f = document.createElement("div");
+    f.className = "fwd";
+    f.textContent = "↪ Forwarded";
+    bubble.appendChild(f);
+  }
   if (m.deleted) {
     bubble.classList.add("deleted");
     bubble.textContent = m.mine ? "You deleted this message" : "This message was deleted";
@@ -950,6 +1035,15 @@ function renderMessage(id, m) {
       q.onclick = (e) => { e.stopPropagation(); jumpTo(m.reply.mid); };
       bubble.appendChild(q);
     }
+    if (m.sticker) {
+      bubble.classList.add("sticker");
+      const e = document.createElement("span");
+      e.className = "sticker-emoji anim-" + m.sticker.anim;
+      e.textContent = m.sticker.e;
+      bubble.appendChild(e);
+    }
+    if (m.file && m.file.sticker) bubble.classList.add("sticker-img");
+    if (m.poll) renderPoll(id, m, bubble);
     if (m.file) renderFile(id, m, bubble);
     if (m.text) {
       const t = document.createElement("div");
@@ -958,6 +1052,7 @@ function renderMessage(id, m) {
       linkify(t, m.text);
       bubble.appendChild(t);
     }
+    if (m.preview) bubble.appendChild(previewCard(m.preview));
   }
   li.appendChild(bubble);
   const reactions = m.reactions && Object.keys(m.reactions);
@@ -978,7 +1073,7 @@ function renderMessage(id, m) {
   }
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = time(m.ts) + (m.edited && !m.deleted ? " · edited" : "") + (m.exp ? " · ⏱" : "");
+  meta.textContent = (m.starred ? "⭐ " : "") + time(m.ts) + (m.edited && !m.deleted ? " · edited" : "") + (m.exp ? " · ⏱" : "");
   const status = document.createElement("span");
   status.className = "status";
   status.textContent = statusLabel(m) ? " · " + statusLabel(m) : "";
@@ -989,6 +1084,79 @@ function renderMessage(id, m) {
     openMessageMenu(id, m.mid, e);
   };
   return li;
+}
+
+function previewCard(pv) {
+  const a = document.createElement("a");
+  a.className = "link-preview";
+  a.href = pv.url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer nofollow";
+  a.onclick = (e) => e.stopPropagation();
+  if (pv.image) {
+    const img = document.createElement("img");
+    img.src = pv.image;
+    img.alt = "";
+    a.appendChild(img);
+  }
+  const box = document.createElement("span");
+  const site = document.createElement("small");
+  site.textContent = pv.site;
+  const title = document.createElement("strong");
+  title.textContent = pv.title;
+  box.append(site, title);
+  if (pv.desc) {
+    const d = document.createElement("span");
+    d.textContent = pv.desc;
+    box.appendChild(d);
+  }
+  a.appendChild(box);
+  return a;
+}
+
+function renderPoll(id, m, bubble) {
+  const p = m.poll;
+  const box = document.createElement("div");
+  box.className = "poll";
+  const q = document.createElement("strong");
+  q.textContent = "📊 " + p.q;
+  box.appendChild(q);
+  const votes = p.votes || {};
+  const voters = Object.keys(votes);
+  const mine = votes[me.username] || [];
+  const counts = p.options.map((_, i) => voters.filter((v) => votes[v].indexOf(i) !== -1).length);
+  const total = voters.length;
+  p.options.forEach((opt, i) => {
+    const b = document.createElement("button");
+    b.className = "poll-option" + (mine.indexOf(i) !== -1 ? " picked" : "");
+    const pct = total ? Math.round((counts[i] / total) * 100) : 0;
+    b.style.setProperty("--pct", pct + "%");
+    const label = document.createElement("span");
+    label.textContent = (mine.indexOf(i) !== -1 ? "✓ " : "") + opt;
+    const n = document.createElement("small");
+    n.textContent = `${counts[i]}`;
+    b.title = voters.filter((v) => votes[v].indexOf(i) !== -1).map((v) => (v === me.username ? "You" : shortName(v))).join(", ");
+    b.append(label, n);
+    b.onclick = (e) => { e.stopPropagation(); vote(id, m, i); };
+    box.appendChild(b);
+  });
+  const foot = document.createElement("small");
+  foot.textContent = `${total} ${total === 1 ? "vote" : "votes"}${p.multi ? " · pick any" : ""}`;
+  box.appendChild(foot);
+  bubble.appendChild(box);
+}
+
+function vote(id, m, i) {
+  const c = chats[id];
+  if (c && (c.left || c.blocked)) return;
+  const fresh = findMessage(id, m.mid);
+  const votes = Object.assign({}, fresh.poll.votes);
+  let mine = (votes[me.username] || []).slice();
+  if (fresh.poll.multi) mine = mine.indexOf(i) !== -1 ? mine.filter((x) => x !== i) : mine.concat(i);
+  else mine = mine[0] === i ? [] : [i];
+  if (mine.length) votes[me.username] = mine; else delete votes[me.username];
+  patchMessage(id, m.mid, { poll: Object.assign({}, fresh.poll, { votes }) });
+  sendControlToChat(id, { kind: "vote", mid: m.mid, choices: mine });
 }
 
 function appendMessage(id, m, scroll) {
@@ -1036,6 +1204,9 @@ function renderHeader() {
   const group = isGroup(active);
   $("peer-name").textContent = chatTitle(active);
   fillAvatar($("peer-avatar"), active);
+  const pinned = c.pinned && findMessage(active, c.pinned);
+  $("pinned-bar").hidden = !pinned;
+  if (pinned) $("pinned-text").textContent = (pinned.mine ? "You: " : shortName(pinned.from) + ": ") + (previewText(pinned) || "");
   const status = group ? "" : profileOf(active).status || "";
   $("peer-status").textContent = status;
   $("peer-status").hidden = !status;
@@ -1134,10 +1305,10 @@ function openMessageMenu(id, mid, e) {
   const more = document.createElement("button");
   more.textContent = "＋";
   more.title = "Another emoji";
-  more.onclick = () => {
+  more.onclick = (ev) => {
+    ev.stopPropagation();
     hideMessageMenu();
-    const emoji = prompt("React with any emoji:");
-    if (emoji && emoji.trim()) react(id, mid, emoji.trim().slice(0, 16));
+    toggleEmoji("react", { id, mid });
   };
   reacts.appendChild(more);
   const actions = $("msg-actions");
@@ -1152,6 +1323,23 @@ function openMessageMenu(id, mid, e) {
   const canSend = !(chats[id] && (chats[id].left || chats[id].blocked));
   if (canSend) add("Reply", () => startReply(id, m));
   if (m.text) add("Copy text", () => copyText(m.text).then(() => toast("Copied.")));
+  if (!m.deleted && m.status !== "scheduled") add("Forward", () => openForward(id, m));
+  add(m.starred ? "Unstar" : "⭐ Star", () => { patchMessage(id, mid, { starred: !m.starred }); toast(m.starred ? "Unstarred." : "Starred. Find it in ⋯ → Starred messages."); });
+  if (canSend && m.status !== "scheduled") {
+    const pinnedHere = chats[id] && chats[id].pinned === mid;
+    add(pinnedHere ? "Unpin" : "📌 Pin for everyone", () => {
+      chats[id].pinned = pinnedHere ? null : mid;
+      saveChats();
+      renderHeader();
+      sendControlToChat(id, { kind: "pin", mid, on: !pinnedHere });
+    });
+  }
+  if (m.mine && m.status === "scheduled" && m.at > Date.now()) add("Cancel scheduled message", async () => {
+    const r = conn && conn.ready ? await conn.op("unschedule", { sids: m.sids || [] }) : { error: "You're offline." };
+    if (r.error) return toast(r.error);
+    deleteMessage(id, mid, false);
+    toast("Scheduled message cancelled.");
+  }, "danger-text");
   if (m.file && m.file.ready) add("Save file", () => saveFile(m.file));
   if (m.mine && !m.file && canSend) add("Edit", () => startEdit(id, m));
   if (m.mine && canSend) add("Delete for everyone", () => {
@@ -2038,12 +2226,12 @@ async function downloadHistory() {
         }
         continue;
       }
-      if (p.kind !== "text" && p.kind !== "file") continue;
+      if (CHAT_KINDS.indexOf(p.kind) === -1) continue;
       const id = p.gid ? "g:" + p.gid : mine ? env.to : env.from;
       if (findMessage(id, p.mid)) continue;
       ensureChat(id);
       const list = loadChat(id);
-      const m = { mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts };
+      const m = Object.assign({ mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts }, cleanExtras(p));
       if (mine) m.status = "sent";
       if (p.kind === "file") m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: true };
       list.push(m);
@@ -2243,7 +2431,13 @@ $("chat").addEventListener("drop", (e) => {
   sendFiles(e.dataTransfer.files);
 });
 
-$("attach-btn").onclick = () => $("attach-file").click();
+$("attach-btn").onclick = (e) => { e.stopPropagation(); $("attach-menu").hidden = !$("attach-menu").hidden; };
+$("attach-file-btn").onclick = () => $("attach-file").click();
+$("attach-poll-btn").onclick = () => openPollDialog();
+$("attach-schedule-btn").onclick = () => openSchedule();
+$("emoji-btn").onclick = (e) => { e.stopPropagation(); toggleEmoji(); };
+$("pinned-bar").onclick = () => active && chats[active].pinned && jumpTo(chats[active].pinned);
+$("starred-btn").onclick = showStarred;
 $("attach-file").onchange = (e) => { sendFiles(e.target.files); e.target.value = ""; };
 $("mic-btn").onclick = startVoice;
 $("record-cancel").onclick = () => stopVoice(false);
@@ -2296,6 +2490,8 @@ $("chat-menu-btn").onclick = openChatMenu;
 document.addEventListener("click", (e) => {
   $("menu").hidden = true;
   $("chat-menu").hidden = true;
+  $("attach-menu").hidden = true;
+  if (!e.target.closest("#emoji-panel, #emoji-btn, #msg-menu")) $("emoji-panel").hidden = true;
   if (!e.target.closest("#msg-menu")) hideMessageMenu();
 });
 document.addEventListener("keydown", (e) => {
@@ -2374,4 +2570,254 @@ if (me) {
     $("signup-mode-note").textContent = r.mode === "approval" ? "New accounts are checked by the admin before they can send messages."
       : r.mode === "closed" ? "Sign-ups are closed right now." : r.mode === "invite" ? "You need an invite code to sign up." : "";
   }).catch(() => {});
+}
+
+// ---------- emoji picker and stickers ----------
+
+let emojiTab = 0;
+let emojiMode = "insert"; // or "react"
+let emojiReact = null;
+
+function toggleEmoji(mode, reactTo) {
+  const panel = $("emoji-panel");
+  emojiMode = mode || "insert";
+  emojiReact = reactTo || null;
+  if (!panel.hidden && !mode) { panel.hidden = true; return; }
+  drawEmoji();
+  panel.hidden = false;
+}
+
+function drawEmoji() {
+  const tabs = $("emoji-tabs");
+  const grid = $("emoji-grid");
+  clear(tabs);
+  const all = EMOJI.map((c) => [c[0], c[1]]).concat(emojiMode === "insert" ? [["🎟️", "Stickers"]] : []);
+  all.forEach(([icon, name], i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = icon;
+    b.title = name;
+    b.className = i === emojiTab ? "on" : "";
+    b.onclick = (e) => { e.stopPropagation(); emojiTab = i; drawEmoji(); };
+    tabs.appendChild(b);
+  });
+  if (emojiTab >= all.length) emojiTab = 0;
+  clear(grid);
+  grid.className = emojiTab === EMOJI.length ? "sticker-grid" : "";
+  if (emojiTab === EMOJI.length) return drawStickers(grid);
+  for (const e of EMOJI[emojiTab][2]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = e;
+    b.onclick = (ev) => { ev.stopPropagation(); pickEmoji(e); };
+    grid.appendChild(b);
+  }
+}
+
+function pickEmoji(e) {
+  if (emojiMode === "react" && emojiReact) {
+    react(emojiReact.id, emojiReact.mid, e);
+    $("emoji-panel").hidden = true;
+    return;
+  }
+  const ta = $("send-text");
+  const start = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+  const end = ta.selectionEnd == null ? ta.value.length : ta.selectionEnd;
+  ta.value = ta.value.slice(0, start) + e + ta.value.slice(end);
+  ta.selectionStart = ta.selectionEnd = start + e.length;
+  composerChanged();
+}
+
+function drawStickers(grid) {
+  for (const [e, anim] of STICKERS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sticker-pick anim-" + anim;
+    b.textContent = e;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (!active) return;
+      $("emoji-panel").hidden = true;
+      sendSpecial(active, { sticker: { e, anim } });
+    };
+    grid.appendChild(b);
+  }
+  // Your own stickers, made from pictures.
+  const mine = store.get("myStickers", []);
+  for (const sid of mine) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sticker-pick own";
+    files.get("sticker:" + sid).then((blob) => {
+      if (!blob) return;
+      const img = document.createElement("img");
+      img.src = URL.createObjectURL(blob);
+      img.alt = "Sticker";
+      b.appendChild(img);
+    });
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!active) return;
+      const blob = await files.get("sticker:" + sid);
+      if (!blob) return;
+      $("emoji-panel").hidden = true;
+      sendFile(active, new File([blob], "sticker.webp", { type: blob.type || "image/webp" }), { sticker: true });
+    };
+    b.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      if (!confirm("Delete this sticker?")) return;
+      store.set("myStickers", store.get("myStickers", []).filter((x) => x !== sid));
+      files.remove("sticker:" + sid);
+      drawEmoji();
+    };
+    grid.appendChild(b);
+  }
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "sticker-pick add";
+  add.textContent = "＋";
+  add.title = "Make a sticker from a picture";
+  add.onclick = (ev) => { ev.stopPropagation(); $("sticker-file").click(); };
+  grid.appendChild(add);
+}
+
+$("sticker-file").onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || !/^image\//.test(file.type)) return;
+  const blob = await Look.shrink(file, 320, "image/webp", 0.85);
+  const sid = uuid();
+  await files.put("sticker:" + sid, blob);
+  store.set("myStickers", store.get("myStickers", []).concat(sid).slice(-60));
+  drawEmoji();
+  toast("Sticker saved. Right-click or long-press it to delete.");
+};
+
+// ---------- polls ----------
+
+function openPollDialog() {
+  if (!active) return;
+  $("poll-q").value = "";
+  $("poll-options").value = "";
+  $("poll-multi").checked = false;
+  $("poll-error").textContent = "";
+  openDialog($("poll-dialog"));
+  $("poll-q").focus();
+}
+$("poll-cancel").onclick = () => closeDialog($("poll-dialog"));
+$("poll-form").onsubmit = (e) => {
+  e.preventDefault();
+  const q = $("poll-q").value.trim();
+  const options = $("poll-options").value.split("\n").map((x) => x.trim()).filter(Boolean).slice(0, 10);
+  if (!q) return ($("poll-error").textContent = "Write a question.");
+  if (options.length < 2) return ($("poll-error").textContent = "Write at least two answers, one per line.");
+  closeDialog($("poll-dialog"));
+  sendSpecial(active, { poll: { q: q.slice(0, 300), options: options.map((o) => o.slice(0, 100)), multi: $("poll-multi").checked, votes: {} } });
+};
+
+// ---------- scheduled messages ----------
+
+function openSchedule() {
+  if (!active) return;
+  if (!Relays.onPrimary()) return toast("Scheduling needs the home server, which isn't on right now.");
+  const t = new Date(Date.now() + 3600e3);
+  t.setSeconds(0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  $("schedule-when").value = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
+  $("schedule-text").value = $("send-text").value;
+  $("schedule-error").textContent = "";
+  openDialog($("schedule-dialog"));
+}
+$("schedule-cancel").onclick = () => closeDialog($("schedule-dialog"));
+$("schedule-form").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("schedule-text").value.trim();
+  const at = new Date($("schedule-when").value).getTime();
+  if (!text) return ($("schedule-error").textContent = "Write the message first.");
+  if (!(at > Date.now() + 60e3)) return ($("schedule-error").textContent = "Pick a time at least a minute from now.");
+  closeDialog($("schedule-dialog"));
+  $("send-text").value = "";
+  composerChanged();
+  sendSpecial(active, { text: text.slice(0, 8000), at, ts: at });
+  toast("Scheduled. It's sent at that time even if your device is off.");
+};
+
+// ---------- forwarding ----------
+
+let forwarding = null;
+
+function openForward(id, m) {
+  forwarding = { id, m };
+  const list = $("forward-list");
+  clear(list);
+  const ids = Object.keys(chats).filter((x) => !(chats[x].left || chats[x].blocked))
+    .sort((a, b) => (chats[b].last || 0) - (chats[a].last || 0));
+  for (const x of ids) {
+    const label = document.createElement("label");
+    label.className = "forward-row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = x;
+    const name = document.createElement("span");
+    name.textContent = chatTitle(x);
+    label.append(box, name);
+    list.appendChild(label);
+  }
+  openDialog($("forward-dialog"));
+}
+$("forward-cancel").onclick = () => closeDialog($("forward-dialog"));
+$("forward-send").onclick = async () => {
+  const targets = Array.from($("forward-list").querySelectorAll("input:checked")).map((b) => b.value);
+  closeDialog($("forward-dialog"));
+  if (!forwarding || !targets.length) return;
+  const m = forwarding.m;
+  for (const to of targets) {
+    if (m.file) {
+      const blob = await files.get(m.file.fid);
+      if (!blob) { toast("That file isn't saved in this browser, so it can't be forwarded."); continue; }
+      const f = new File([blob], m.file.name, { type: m.file.type });
+      await sendFile(to, f, { caption: m.text, fwd: true, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker });
+    } else if (m.poll) {
+      sendSpecial(to, { poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi, votes: {} }, fwd: true });
+    } else if (m.sticker) {
+      sendSpecial(to, { sticker: m.sticker, fwd: true });
+    } else {
+      sendSpecial(to, { text: m.text, preview: m.preview, fwd: true });
+    }
+  }
+  toast(targets.length === 1 ? "Forwarded." : `Forwarded to ${targets.length} chats.`);
+};
+
+// ---------- starred messages ----------
+
+function showStarred() {
+  const results = $("results");
+  $("contacts").hidden = true;
+  results.hidden = false;
+  clear(results);
+  let count = 0;
+  for (const id of Object.keys(chats)) {
+    for (const m of loadChat(id)) {
+      if (!m.starred || m.deleted) continue;
+      const li = chatRow(id, "⭐ " + (m.mine ? "You: " : "") + previewText(m));
+      li.dataset.id = id;
+      li.dataset.mid = m.mid;
+      results.appendChild(li);
+      count++;
+    }
+  }
+  if (!count) {
+    const li = document.createElement("li");
+    li.className = "none";
+    li.textContent = "No starred messages. Tap a message → Star to save it here.";
+    results.appendChild(li);
+  }
+  const close = document.createElement("li");
+  close.className = "none";
+  const b = document.createElement("button");
+  b.className = "link";
+  b.textContent = "Back to chats";
+  b.onclick = (e) => { e.stopPropagation(); closeSearch(); };
+  close.appendChild(b);
+  results.insertBefore(close, results.firstChild);
 }

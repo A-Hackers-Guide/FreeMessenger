@@ -64,6 +64,7 @@
           <button id="share-btn">Share my link</button>
           <button id="new-group-btn">New group</button>
           <button id="browser-btn" hidden>Web viewer</button>
+          <button id="starred-btn">Starred messages</button>
           <button id="settings-btn">Settings</button>
           <button id="admin-btn" hidden>Admin panel</button>
           <button id="backup-btn">Download backup</button>
@@ -117,6 +118,9 @@
           </button>
           <div id="chat-menu" class="menu" hidden></div>
         </header>
+        <div id="pinned-bar" class="subbar pinned" role="button" tabindex="0" hidden>
+          <span class="pin-icon">📌</span><span id="pinned-text" class="grow"></span>
+        </div>
         <div id="chat-search-bar" class="subbar" hidden>
           <input id="chat-search" type="search" placeholder="Search this chat" aria-label="Search this chat">
           <span id="chat-search-count"></span>
@@ -132,11 +136,22 @@
           <button id="record-cancel" class="ghost small">Cancel</button>
           <button id="record-send" class="primary small">Send</button>
         </div>
+        <div id="emoji-panel" class="emoji-panel" hidden>
+          <div id="emoji-tabs" class="emoji-tabs"></div>
+          <div id="emoji-grid"></div>
+          <input type="file" id="sticker-file" accept="image/*" hidden>
+        </div>
+        <div id="attach-menu" class="menu attach-menu" hidden>
+          <button type="button" id="attach-file-btn">📎 Photo, video or file</button>
+          <button type="button" id="attach-poll-btn">📊 Poll</button>
+          <button type="button" id="attach-schedule-btn">⏰ Schedule a message</button>
+        </div>
         <form id="send-form" class="composer">
-          <button type="button" id="attach-btn" class="icon" aria-label="Send a photo or file" title="Send a photo or file">
+          <button type="button" id="attach-btn" class="icon" aria-label="Attach, poll or schedule" title="Attach, poll or schedule">
             <svg viewBox="0 0 24 24"><path d="M16.5 6.5l-7.8 7.8a2 2 0 002.8 2.8l7.8-7.8a4 4 0 00-5.7-5.7l-7.8 7.8a6 6 0 008.5 8.5l6.4-6.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
           <input type="file" id="attach-file" multiple hidden>
+          <button type="button" id="emoji-btn" class="icon emoji-btn" aria-label="Emoji and stickers" title="Emoji and stickers">😊</button>
           <textarea id="send-text" rows="1" placeholder="Message" maxlength="8000"></textarea>
           <button type="button" id="mic-btn" class="icon" aria-label="Record a voice message" title="Record a voice message">
             <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-2.1a7 7 0 006-6.9h-2z"/></svg>
@@ -255,6 +270,34 @@
       <button type="button" id="look-reset" class="ghost">Reset</button>
       <button type="button" id="look-done" class="primary">Done</button>
     </div>
+  </dialog>
+
+  <dialog id="poll-dialog">
+    <form id="poll-form" class="stack-form">
+      <h2>New poll</h2>
+      <label>Question<input id="poll-q" maxlength="300" autocomplete="off" placeholder="Pizza or tacos?"></label>
+      <label>Answers, one per line (2 to 10)<textarea id="poll-options" rows="5" placeholder="Pizza&#10;Tacos"></textarea></label>
+      <label class="check"><input type="checkbox" id="poll-multi"> People can pick more than one</label>
+      <p id="poll-error" class="error" role="alert"></p>
+      <div class="row"><button type="button" id="poll-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Send poll</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="schedule-dialog">
+    <form id="schedule-form" class="stack-form">
+      <h2>Schedule a message</h2>
+      <label>Message<textarea id="schedule-text" rows="3" maxlength="8000"></textarea></label>
+      <label>Send it at<input type="datetime-local" id="schedule-when"></label>
+      <p class="fine">The home server sends it at that time, even if your device is off.</p>
+      <p id="schedule-error" class="error" role="alert"></p>
+      <div class="row"><button type="button" id="schedule-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Schedule</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="forward-dialog">
+    <h2>Forward to…</h2>
+    <div id="forward-list" class="forward-list"></div>
+    <div class="row"><button type="button" id="forward-cancel" class="ghost">Cancel</button><button type="button" id="forward-send" class="primary">Forward</button></div>
   </dialog>
 
   <dialog id="privacy-dialog">

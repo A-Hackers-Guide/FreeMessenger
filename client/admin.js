@@ -312,8 +312,12 @@ function conversations() {
 function describe(p) {
   if (!p) return "[couldn't decrypt: sent before admin copies existed, or by an old app]";
   switch (p.kind) {
-    case "text": return p.text || "";
+    case "text": return (p.fwd ? "↪ " : "") + (p.text || "") + (p.preview ? `  [link: ${p.preview.title}]` : "");
     case "file": return `📎 ${p.voice ? "Voice message" : p.name} (${size(p.size)})${p.text ? " — " + p.text : ""}`;
+    case "poll": return `📊 Poll: ${p.poll && p.poll.q} — ${((p.poll && p.poll.options) || []).join(" / ")}`;
+    case "sticker": return `${p.sticker && p.sticker.e} (sticker)`;
+    case "vote": return `voted in a poll (${(p.choices || []).map((c) => c + 1).join(", ") || "removed vote"})`;
+    case "pin": return p.on ? "📌 pinned a message" : "unpinned a message";
     case "edit": return `✏️ edited a message to: ${p.text}`;
     case "delete": return "🗑 deleted a message for everyone";
     case "react": return p.emoji ? `reacted ${p.emoji}` : "removed a reaction";
