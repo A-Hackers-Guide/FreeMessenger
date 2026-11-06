@@ -2,7 +2,7 @@
 // and shows notifications the relay sends while the site is closed.
 // Only browsers new enough to have service workers run this file.
 
-const CACHE = "freemessenger-v6";
+const CACHE = "freemessenger-v7";
 
 // Do Not Disturb hours, saved by the app in IndexedDB.
 function dndNow() {
@@ -41,9 +41,83 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// ---------- big file downloads, streamed straight to disk ----------
+//
+// The page hands over the file's details; a hidden frame then opens
+// ./__download/<id>/<name>, and this answers it with the file, fetched and
+// decrypted a few pieces ahead, so even 10 GB never has to fit in memory.
+
+const downloads = new Map();
+self.addEventListener("message", (e) => {
+  const d = e.data;
+  if (d && d.type === "download" && typeof d.id === "string") {
+    downloads.set(d.id, d);
+    setTimeout(() => downloads.delete(d.id), 3 * 3600e3);
+  }
+});
+
+const counter = (i) => { const a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, i); return a; };
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function getPiece(d, key, i) {
+  for (let attempt = 0, waited = 0; ; attempt++) {
+    try {
+      const r = await fetch(`${d.base}/api/blob/${d.token}/${d.bid}/${i}`);
+      if (r.status === 425 && waited < 2 * 3600e3) { await new Promise((ok) => setTimeout(ok, 1500)); waited += 1500; attempt--; continue; }
+      if (!r.ok) throw Object.assign(new Error("download " + r.status), { fatal: r.status === 404 || r.status === 410 || r.status === 403 });
+      const data = new Uint8Array(await r.arrayBuffer());
+      return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: data.subarray(0, 12), additionalData: counter(i) }, key, data.subarray(12)));
+    } catch (err) {
+      if (err.fatal || attempt >= 5) throw err;
+      await new Promise((ok) => setTimeout(ok, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+function streamDownload(d) {
+  let key = null;
+  let next = 0;
+  let out = 0;
+  const pending = new Map();
+  const ahead = () => { while (next < d.chunks && pending.size < 4) { const i = next++; pending.set(i, getPiece(d, key, i)); } };
+  const body = new ReadableStream({
+    async start() {
+      key = await crypto.subtle.importKey("raw", unb64(d.key), "AES-GCM", false, ["decrypt"]);
+    },
+    async pull(controller) {
+      if (out >= d.chunks) return controller.close();
+      ahead();
+      try {
+        const data = await pending.get(out);
+        pending.delete(out);
+        out++;
+        controller.enqueue(data);
+        ahead();
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+  });
+  const name = encodeURIComponent(d.name || "file").replace(/['()]/g, escape);
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename*=UTF-8''${name}`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 // The network first, so updates show up right away; the saved copy when offline.
 self.addEventListener("fetch", (e) => {
   const req = e.request;
+  const dl = new URL(req.url).pathname.match(/\/__download\/([a-z0-9]+)\//);
+  if (dl && downloads.has(dl[1])) {
+    const d = downloads.get(dl[1]);
+    downloads.delete(dl[1]);
+    e.respondWith(streamDownload(d));
+    return;
+  }
   if (req.method !== "GET" || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
     fetch(req)

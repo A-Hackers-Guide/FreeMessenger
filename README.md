@@ -41,7 +41,7 @@ Your friend does the same thing in their own browser. That's it.
 | ⏰ **Scheduled messages** | Write now, send later. The server sends it at that time even if your device is off. |
 | 📷 **Share** | Photos, videos, voice messages and any file up to 10 MB. Paste or drag them into a chat. |
 | 👥 **Groups** | Up to 256 people. Group admins rename, add and remove people and make other admins, and can share an invite link that adds people automatically. |
-| 📞 **Call** | Voice and video calls, **group calls up to 8 people**, screen sharing, front/back camera switching, and a call history (⋯ → **Call history**) |
+| 📞 **Call** | Voice and video calls, **group calls up to 20 people**, screen sharing, front/back camera switching, and a call history (⋯ → **Call history**) |
 | 💻 **All your devices** | Use your account on several devices: what you send on one shows up on the others, and each catches up on what it missed. |
 | ✏️ **Change your username** | Once a month (Settings). Your old name keeps leading to you and can't be taken by anyone else. |
 | ⏱ **Disappearing messages** | Messages delete themselves after 1 hour, 1 day, 1 week or 30 days |
@@ -130,11 +130,11 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 | | |
 |---|---|
 | Message length | 8,000 characters |
-| Photos, videos, voice messages and files | Up to 10 MB each (photos are made smaller automatically) |
+| Photos, videos, voice messages and files | Up to **10 GB** each. Up to 10 MB they travel like messages (and work through the backup relay). Bigger ones are encrypted, uploaded once to the home server and downloaded from it, starting while they're still uploading; the server deletes them after a few minutes unless enough people download them in time (the admin sets the numbers). |
 | Group size | 256 people |
 | How often you can send | 1 message a second (a few quick ones in a row are fine; the app waits and sends the rest by itself) |
 | Saved messages | No limit while the main server is on. On the backup server: up to 5,000 waiting per person, for 30 days. |
-| Group calls | Up to 8 people (everyone sends to everyone, so it needs decent upload speed) |
+| Group calls | Up to **20 people**. Video quality drops automatically as people join, so it stays around 2–3 Mbps of upload even when full. |
 | Phone (SMS/calling real numbers) | Not yet (see roadmap) |
 
 ---

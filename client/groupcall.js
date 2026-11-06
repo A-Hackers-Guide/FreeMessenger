@@ -1,5 +1,8 @@
 // Group voice and video calls: every person connects straight to every other
-// person (a "mesh"), up to 8 people. Call setup travels as encrypted
+// person (a "mesh"), up to 20 people. Each person sends their video to
+// everyone else, so video quality is lowered automatically as people join,
+// keeping the total upload within an ordinary home or phone connection
+// (about 2–3 Mbps with 20 people). Voice is small enough not to need it. Call setup travels as encrypted
 // messages through the relay like 1-to-1 calls; audio and video don't.
 //
 // Whoever is already in the call sends the offer to someone who joins, so
@@ -8,7 +11,34 @@
 import { uuid, clear } from "./compat.js";
 
 const $ = (id) => document.getElementById(id);
-const MAX = 8;
+const MAX = 20;
+
+// Video bitrate (bits/s) and size reduction for each stream, by call size.
+function quality(people) {
+  if (people <= 3) return { bitrate: 1200000, scale: 1 };
+  if (people <= 5) return { bitrate: 700000, scale: 1 };
+  if (people <= 8) return { bitrate: 400000, scale: 1.5 };
+  if (people <= 12) return { bitrate: 250000, scale: 2 };
+  return { bitrate: 150000, scale: 3 };
+}
+
+async function applyQuality() {
+  if (!gc || !gc.video) return;
+  const q = quality(gc.peers.size + 1);
+  for (const p of gc.peers.values()) {
+    for (const sender of p.pc.getSenders()) {
+      if (!sender.track || sender.track.kind !== "video" || !sender.getParameters) continue;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = q.bitrate;
+        params.encodings[0].scaleResolutionDownBy = gc.screen ? 1 : q.scale;
+        await sender.setParameters(params);
+      } catch {}
+    }
+  }
+  $("gcall-grid").dataset.size = gc.peers.size + 1 > 8 ? "big" : "";
+}
 let ctx = null; // { me(), send(to, payload), members(gid), title(gid), name(user), ice(), media(video), toast(), log(entry), ring(on) }
 let gc = null;  // the call this browser is in
 let invite = null;
@@ -91,6 +121,7 @@ function status(text) {
 
 function updateStatus() {
   if (!gc) return;
+  applyQuality();
   const n = gc.peers.size + 1;
   status(n === 1 ? "Just you so far" : `${n} people`);
 }
@@ -140,6 +171,7 @@ async function peerConnection(name) {
   };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === "failed" || pc.connectionState === "closed") dropPeer(name);
+    if (pc.connectionState === "connected") applyQuality();
   };
   addTile(name, null, false);
   updateStatus();
