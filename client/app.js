@@ -2181,7 +2181,8 @@ function editDefaultChat() {
 function usePreset(name) {
   const preset = Look.PRESETS[name];
   if (!preset) return;
-  settings.look = JSON.parse(JSON.stringify(preset[1]));
+  const keep = settings.look || {};
+  settings.look = Object.assign(JSON.parse(JSON.stringify(preset[1])), { font: keep.font, bubble: keep.bubble });
   settings.look.preset = name;
   store.set("settings", settings);
   applySettings();
@@ -2208,10 +2209,30 @@ function fillLookControls() {
     all.onclick = editDefaultChat;
     bars.appendChild(all);
   }
+  if (!$("set-font").options.length) {
+    for (const [k, label] of Look.FONTS) $("set-font").appendChild(new Option(label, k));
+    for (const [k, label] of Look.BUBBLES) $("set-bubble").appendChild(new Option(label, k));
+  }
+  const look = settings.look || {};
+  $("set-font").value = look.font || "system";
+  $("set-bubble").value = look.bubble || "round";
+  $("set-mine").value = look.mine || look.accent || "#2f6fed";
+  $("set-theirs").value = look.theirs || "#eceef2";
   sel.value = (settings.look && settings.look.preset) || "default";
   $("set-accent").value = (settings.look && settings.look.accent) || "#2f6fed";
 }
 
+function setLook(key, value) {
+  settings.look = settings.look || {};
+  if (value === undefined) delete settings.look[key]; else settings.look[key] = value;
+  store.set("settings", settings);
+  applySettings();
+}
+$("set-font").onchange = () => setLook("font", $("set-font").value);
+$("set-bubble").onchange = () => setLook("bubble", $("set-bubble").value);
+$("set-mine").oninput = () => setLook("mine", $("set-mine").value);
+$("set-theirs").oninput = () => setLook("theirs", $("set-theirs").value);
+$("set-colors-reset").onclick = () => { setLook("mine"); setLook("theirs"); fillLookControls(); };
 $("set-preset").onchange = () => { if ($("set-preset").value !== "custom") usePreset($("set-preset").value); };
 $("set-accent").oninput = () => {
   settings.look = settings.look || {};

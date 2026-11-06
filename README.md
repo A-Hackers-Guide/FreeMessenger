@@ -29,14 +29,16 @@ Your friend does the same thing in their own browser. That's it.
 | 🔗 **Link previews** | Title, description and picture for links, fetched once by the server so the people you send it to never contact the site |
 | ⏰ **Scheduled messages** | Write now, send later. The server sends it at that time even if your device is off. |
 | 📷 **Share** | Photos, videos, voice messages and any file up to 10 MB. Paste or drag them into a chat. |
-| 👥 **Groups** | Up to 32 people. Rename them, add people, or leave. |
-| 📞 **Call** | Voice and video calls, with screen sharing and front/back camera switching |
+| 👥 **Groups** | Up to 256 people. Group admins rename, add and remove people and make other admins, and can share an invite link that adds people automatically. |
+| 📞 **Call** | Voice and video calls, **group calls up to 8 people**, screen sharing, front/back camera switching, and a call history (⋯ → **Call history**) |
+| 💻 **All your devices** | Use your account on several devices: what you send on one shows up on the others, and each catches up on what it missed. |
+| ✏️ **Change your username** | Once a month (Settings). Your old name keeps leading to you and can't be taken by anyone else. |
 | ⏱ **Disappearing messages** | Messages delete themselves after 1 hour, 1 day, 1 week or 30 days |
 | 🔔 **Notifications** | Even when the site is closed (on iPhone and iPad, install the app first) |
 | 📲 **Install it** | ⋯ → **Install app** puts it on your home screen or desktop. It opens even when you're offline. |
 | 🙂 **Profiles** | A profile picture, display name, real name, status and "about" text (⋯ → **My profile**). Tap someone's name in a chat to see theirs. |
 | 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute, block and clear history are in each chat's ⋮ menu. |
-| 🎨 **Make it yours** | Ready-made themes, an accent color, and a color, gradient or picture for each bar. Every chat can have its own background and animation (aurora, bubbles, stars, snow, hearts, waves, rain, confetti). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
+| 🎨 **Make it yours** | Ready-made themes, an accent color, fonts, bubble shapes and colors, and a color, gradient or picture for each bar. Every chat can have its own background and one of 15 animations (aurora, bubbles, stars, snow, hearts, waves, rain, confetti, fireflies, petals, balloons, sparkles, lava lamp, matrix, northern lights). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
 | 🗂 **Your history anywhere** | Messages are kept on the server, so a new browser can download your old chats (Settings → **Get my old messages**). |
 | 🚩 **Report** | Tap a message → **Report to admin** if something's wrong. |
 | 🌐 **Web viewer** | For people the admin allows: open links through the server in a safe viewer with scripts turned off. |
@@ -108,10 +110,10 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 |---|---|
 | Message length | 8,000 characters |
 | Photos, videos, voice messages and files | Up to 10 MB each (photos are made smaller automatically) |
-| Group size | 32 people |
+| Group size | 256 people |
 | How often you can send | 1 message a second (a few quick ones in a row are fine; the app waits and sends the rest by itself) |
 | Saved messages | No limit while the main server is on. On the backup server: up to 5,000 waiting per person, for 30 days. |
-| Group calls | Not yet |
+| Group calls | Up to 8 people (everyone sends to everyone, so it needs decent upload speed) |
 | Phone (SMS/calling real numbers) | Not yet (see roadmap) |
 
 ---
@@ -123,7 +125,7 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 3. ✅ Photos, files, voice messages, groups, reactions, replies, read receipts, disappearing messages
 4. ✅ Installable app with notifications even when the site is closed
 5. ✅ Profiles, themes, chat backgrounds and animations, server-side history, web viewer, admin panel
-6. Group calls
+6. ✅ Group calls, group admins and invite links, device sync, username changes
 7. Apps for Windows, macOS, Linux, Android and iOS
 8. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
 
