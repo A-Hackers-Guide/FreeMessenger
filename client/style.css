@@ -537,3 +537,10 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 @keyframes fx-laser { from { transform: rotate(-12deg); opacity: .2; } to { transform: rotate(12deg); opacity: 1; } }
 @keyframes fx-shake { 0%, 100% { transform: translate(0); } 25% { transform: translate(-6px, 3px); } 75% { transform: translate(6px, -3px); } }
 @media (prefers-reduced-motion: reduce) { .effect { display: none; } body.shake #app { animation: none; } }
+
+.install-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
+.install-here { color: var(--text) !important; font-weight: 600; }
+.install-dialog .primary { width: 100%; margin-bottom: 8px; }
+.install-list { margin: 0 0 12px; display: grid; gap: 8px; font-size: 14px; }
+.install-list dt { font-weight: 700; }
+.install-list dd { margin: 0; color: var(--muted); }

@@ -9,6 +9,17 @@
 
 No app to install (but you can). No email, phone number or password. Works on phones, tablets and computers.
 
+### 📲 Get the app
+
+| Device | How |
+|---|---|
+| **Android** | [Download FreeMessenger.apk](https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest/download/FreeMessenger.apk) and open it (allow installing from your browser if asked). Or in Chrome: ⋮ → **Install app**. |
+| **iPhone / iPad** | Open the site in Safari → **Share** → **Add to Home Screen**. Open it from your home screen to get notifications. |
+| **Mac** | Safari: **File → Add to Dock**. Chrome or Edge: the install icon in the address bar. |
+| **Windows / Linux / ChromeOS** | Chrome or Edge: the install icon in the address bar. |
+
+Every version is the same app and updates itself. In the app: ⋯ → **Get the app**.
+
 ---
 
 ## How to use it
@@ -131,7 +142,7 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 4. ✅ Installable app with notifications even when the site is closed
 5. ✅ Profiles, themes, chat backgrounds and animations, server-side history, web viewer, admin panel
 6. ✅ Group calls, group admins and invite links, device sync, username changes
-7. Apps for Windows, macOS, Linux, Android and iOS
+7. ✅ Android app (APK), and installable on iPhone, iPad, Mac, Windows, Linux and ChromeOS
 8. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
 
 ---
@@ -201,6 +212,20 @@ Then put the `PRIMARY_KEY=…` line it prints into `relay/wrangler.toml` under `
 **Admin access** is tied to the admin account's own key (pinned in `config.json` the first time the relay sees that account). On top of that, only **trusted browsers** open the admin panel directly: each keeps a device key it can't export, and proves itself by signing the connection's challenge. The first browser is trusted with a one-time setup code the relay writes to `data\device-setup-code.txt`. Any other browser needs the 6-digit code shown on a trusted browser (Admin panel → **Devices & codes**), and can be trusted from there. Five wrong codes lock the panel for 15 minutes, and each code works once.
 
 On other systems: `cd server && npm ci && node setup.mjs data --admin yourname --cloudflared "$(which cloudflared)" && node server.js data`.
+
+</details>
+
+<details>
+<summary><strong>Build the Android app</strong></summary>
+
+[`android/`](android/) is a Trusted Web Activity: the site running full-screen in the phone's browser engine, with a WebView fallback. It needs JDK 17+ and the Android SDK.
+
+```bash
+cd android
+FM_KEYSTORE=/path/to/release.jks FM_KEYSTORE_PASSWORD=... ./gradlew assembleRelease
+```
+
+The signing key stays outside the repo. Its SHA-256 fingerprint is published at `https://a-hackers-guide.github.io/.well-known/assetlinks.json`, which is what lets the app hide the browser bar. Updates must be signed with the same key.
 
 </details>
 

@@ -2,7 +2,7 @@
 // and shows notifications the relay sends while the site is closed.
 // Only browsers new enough to have service workers run this file.
 
-const CACHE = "freemessenger-v5";
+const CACHE = "freemessenger-v6";
 
 // Do Not Disturb hours, saved by the app in IndexedDB.
 function dndNow() {
@@ -27,7 +27,7 @@ function dndNow() {
     } catch { resolve(false); }
   });
 }
-const SHELL = ["./", "index.html", "style.css", "app.min.js", "crypto-fallback.min.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const SHELL = ["./", "index.html", "style.css", "app.min.js", "crypto-fallback.min.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

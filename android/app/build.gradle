@@ -1,0 +1,51 @@
+// FreeMessenger for Android: a Trusted Web Activity, so the app is the real
+// site running full-screen in the phone's browser engine (notifications,
+// calls and updates all come from the site). Falls back to a WebView on
+// phones without a TWA-capable browser.
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "io.github.ahackersguide.freemessenger"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "io.github.ahackersguide.freemessenger"
+        minSdk 21
+        targetSdk 34
+        versionCode 10000
+        versionName "1.0.0"
+        manifestPlaceholders = [
+            hostName: "a-hackers-guide.github.io",
+            launchUrl: "/FreeMessenger/?source=android",
+        ]
+    }
+
+    // The signing key is kept outside the repo: set FM_KEYSTORE,
+    // FM_KEYSTORE_PASSWORD and FM_KEY_ALIAS to build a release.
+    signingConfigs {
+        release {
+            if (System.getenv("FM_KEYSTORE")) {
+                storeFile file(System.getenv("FM_KEYSTORE"))
+                storePassword System.getenv("FM_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("FM_KEY_ALIAS") ?: "freemessenger"
+                keyPassword System.getenv("FM_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv("FM_KEYSTORE")) signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "com.google.androidbrowserhelper:androidbrowserhelper:2.5.0"
+}
