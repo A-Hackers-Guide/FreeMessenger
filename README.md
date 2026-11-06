@@ -207,6 +207,8 @@ powershell -ExecutionPolicy Bypass -File server\install.ps1 -Admin yourname
 
 Then put the `PRIMARY_KEY=…` line it prints into `relay/wrangler.toml` under `[vars]` and redeploy the backup relay.
 
+The relay also asks your router to forward the TURN ports with NAT-PMP (no router password), renews them every 30 minutes, and the backup relay checks from the internet that TURN answers; both show on the admin panel's Activity tab. coturn is pinned to an exact image, so an upstream release can't break it.
+
 **Admin tools:** accounts (approve, freeze, time out, ban, remove, storage limits), reports, word alerts (checked in the admin's browser after decrypting), announcements to everyone, sign-up modes (open, approval, invite codes, closed), and nightly database backups at 3 AM to `-BackupFolder` (default `H:\FreeMessenger-backups`, last 14 kept).
 
 **Admin access** is tied to the admin account's own key (pinned in `config.json` the first time the relay sees that account). On top of that, only **trusted browsers** open the admin panel directly: each keeps a device key it can't export, and proves itself by signing the connection's challenge. The first browser is trusted with a one-time setup code the relay writes to `data\device-setup-code.txt`. Any other browser needs the 6-digit code shown on a trusted browser (Admin panel → **Devices & codes**), and can be trusted from there. Five wrong codes lock the panel for 15 minutes, and each code works once.

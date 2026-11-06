@@ -42,7 +42,9 @@ if (-not (Test-Path $cloudflared)) {
   $cloudflared = "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe"
 }
 
-node "$app\server\setup.mjs" $data --admin $Admin --cap $CapGB --cloudflared $cloudflared --backup-dir $BackupFolder | Tee-Object -Variable setupOut
+# The router, for keeping the TURN port forwards (NAT-PMP).
+$gateway = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4DefaultGateway.NextHop
+node "$app\server\setup.mjs" $data --admin $Admin --cap $CapGB --cloudflared $cloudflared --backup-dir $BackupFolder --gateway $gateway | Tee-Object -Variable setupOut
 if ($LASTEXITCODE) { throw "setup failed" }
 # The data folder holds the sync key and TURN secret: only this account may read it.
 icacls $data /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
@@ -59,9 +61,9 @@ if (-not $NoTurn) {
 docker rm -f freemessenger-turn 2>`$null | Out-Null
 docker run -d --name freemessenger-turn --restart unless-stopped ``
   -p 3478:3478 -p 3478:3478/udp -p 40000-40040:40000-40040/udp ``
-  coturn/coturn -n --log-file=stdout --listening-port=3478 --min-port=40000 --max-port=40040 ``
+  coturn/coturn@sha256:bbefd3e1fdfdc0d58770fe01b581fd8b00d9f3a5580d00acb77cf719a6bc78e3 -n --log-file=stdout --listening-port=3478 --min-port=40000 --max-port=40040 ``
   '--external-ip=`$(detect-external-ip)' --realm=freemessenger --use-auth-secret '--static-auth-secret=$($cfg.turn.secret)' ``
-  --fingerprint --no-cli --no-tls --no-dtls --no-multicast-peers ``
+  --fingerprint --no-multicast-peers ``
   --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255 ``
   --denied-peer-ip=100.64.0.0-100.127.255.255 --denied-peer-ip=127.0.0.0-127.255.255.255 ``
   --denied-peer-ip=169.254.0.0-169.254.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255 ``
@@ -105,4 +107,4 @@ Write-Host ""
 Write-Host "Done. The relay starts whenever you sign in to Windows. Log: $data\relay.log"
 Write-Host "Put this line in relay/wrangler.toml under [vars] (it's a public key, safe to share):"
 $setupOut | Where-Object { $_ -like "PRIMARY_KEY=*" }
-if (-not $NoTurn) { Write-Host "For calls through strict networks, forward UDP+TCP 3478 and UDP 40000-40040 on your router to this PC." }
+if (-not $NoTurn) { Write-Host "The relay asks your router to forward the TURN ports (NAT-PMP). If the admin panel's Activity tab says that failed, forward UDP+TCP 3478 and UDP 40000-40040 to this PC by hand." }

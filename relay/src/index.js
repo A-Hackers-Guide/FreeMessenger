@@ -11,6 +11,7 @@
 // "admin copy" encrypted for the site admin, who can read it in the admin
 // panel on the home PC. The relay itself can read neither.
 
+import { connect } from "cloudflare:sockets";
 import {
   USERNAME, RESERVED, MAX_ENVELOPE_BYTES, CORS, json, isPublicJwk, verify, randomHex,
   RateLimit, allowSend, cleanProfile, cleanMeta, coturnServers, STUN, openSync,
@@ -136,6 +137,29 @@ async function cloudflareTurn(env) {
   }
 }
 
+// A STUN Binding request over TCP (what a TURN server answers without a login).
+async function stunOverTcp(host, port) {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return { ok: false, error: "not an IPv4 address" };
+  const started = Date.now();
+  try {
+    const sock = connect({ hostname: host, port });
+    const req = new Uint8Array(20);
+    const view = new DataView(req.buffer);
+    view.setUint16(0, 0x0001);
+    view.setUint32(4, 0x2112a442);
+    crypto.getRandomValues(req.subarray(8));
+    const w = sock.writable.getWriter();
+    await w.write(req);
+    const reader = sock.readable.getReader();
+    const r = await Promise.race([reader.read(), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 4000))]);
+    try { await sock.close(); } catch {}
+    const ok = r.value && r.value.length >= 20 && new DataView(r.value.buffer, r.value.byteOffset).getUint16(0) === 0x0101;
+    return ok ? { ok: true, ms: Date.now() - started } : { ok: false, error: "unexpected answer" };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------- sync with the home PC ----------
 
 async function sync(request, env) {
@@ -168,6 +192,8 @@ async function sync(request, env) {
   }
 
   const out = { ok: true, users: [] };
+  // From the outside internet: does the home PC's TURN server answer?
+  if (body.checkTurn && body.turn && typeof body.turn.host === "string") out.turnCheck = await stunOverTcp(body.turn.host, body.turn.port || 3478);
   if (body.wantVapid) {
     out.vapid = await (await userStub(env, VAPID).fetch("https://do/vapid-private")).json();
     calls++;
