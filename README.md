@@ -40,6 +40,11 @@ Your friend does the same thing in their own browser. That's it.
 | 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute, block and clear history are in each chat's ⋮ menu. |
 | 🎨 **Make it yours** | Ready-made themes, an accent color, fonts, bubble shapes and colors, and a color, gradient or picture for each bar. Every chat can have its own background and one of 15 animations (aurora, bubbles, stars, snow, hearts, waves, rain, confetti, fireflies, petals, balloons, sparkles, lava lamp, matrix, northern lights). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
 | 🗂 **Your history anywhere** | Messages are kept on the server, so a new browser can download your old chats (Settings → **Get my old messages**). |
+| ✍️ **Formatting** | **bold**, _italic_, ~strike~, `code`, ||spoilers||, and @mentions that reach you even in muted groups |
+| 🗂 **Organize** | Pin chats to the top, archive them, mark as unread, drafts kept per chat, and ⭐ **Saved messages** for notes to yourself |
+| 🎆 **Send effects** | Long-press or right-click **Send**: send silently, or with confetti, fireworks, hearts, balloons, lasers, snow or a shake |
+| 👀 **More** | View-once photos, location sharing, voice messages at 1.5× and 2×, "recording…" indicator, each chat's photos, files and links in one place, reply privately from a group, announcement-only groups |
+| 🔒 **Privacy** | Online and last seen (turn it off and you can't see others'), an app lock PIN, and Do Not Disturb hours |
 | 🚩 **Report** | Tap a message → **Report to admin** if something's wrong. |
 | 🌐 **Web viewer** | For people the admin allows: open links through the server in a safe viewer with scripts turned off. |
 

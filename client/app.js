@@ -36,7 +36,7 @@ let chats = store.get("chats", null);
 let peers = store.get("peers", {});
 let outbox = store.get("outbox", []);
 const settings = Object.assign(
-  { theme: "system", size: "normal", enterSends: true, readReceipts: true, typing: true, look: {} },
+  { theme: "system", size: "normal", enterSends: true, readReceipts: true, typing: true, look: {}, hideSeen: false, dnd: null, lockAfter: 60 },
   store.get("settings", {}),
 );
 
@@ -79,6 +79,7 @@ function saveChat(id, list) {
 const findMessage = (id, mid) => loadChat(id).find((m) => m.mid === mid);
 
 function chatTitle(id) {
+  if (me && id === me.username) return "⭐ Saved messages";
   const c = chats[id] || {};
   if (isGroup(id)) return c.name || "Group";
   const shown = c.nickname || profileOf(id).display;
@@ -145,7 +146,12 @@ async function connect() {
       if (on) {
         flushOutbox();
         Push.refresh(conn);
-        if (flags.primary && c.relay !== Relays.BACKUP) { loadAnnouncements(); syncDevice(); }
+        if (flags.primary && c.relay !== Relays.BACKUP) {
+          loadAnnouncements();
+          syncDevice();
+          if (settings.hideSeen) conn.op("privacy", { hideSeen: true });
+          refreshPresence();
+        }
       }
     },
     onFlags: (f) => {
@@ -242,7 +248,7 @@ let lastBlockedToast = 0;
 // Messages people should hear about wake the other person's device; edits,
 // receipts, file pieces and typing don't.
 const CHAT_KINDS = ["text", "file", "poll", "sticker"];
-const pushHint = (p) => (CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" || p.kind === "gcall-ring" ? "call" : undefined);
+const pushHint = (p) => (p.silent ? undefined : CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" || p.kind === "gcall-ring" ? "call" : undefined);
 
 // Every saved message also carries an "admin copy", encrypted for the site
 // admin, who can read it in the admin panel (people are told this when they
@@ -309,8 +315,15 @@ async function handleIncoming(env) {
   if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
 
   if (p.kind === "group") return handleGroupEvent(env.from, p, env.ts);
+  // Your own message coming back: notes to yourself, or sent from another device.
+  if (env.from === me.username) {
+    if (CHAT_KINDS.indexOf(p.kind) !== -1) await importHistory([Object.assign({ to: p.gid ? me.username : me.username }, env)], false);
+    return;
+  }
   const id = p.gid ? "g:" + p.gid : env.from;
   if (p.gid && !acceptFromGroup(id, env.from)) return;
+  // Announcement-only groups: only admins' messages count.
+  if (p.gid && chats[id] && chats[id].adminsOnly && CHAT_KINDS.indexOf(p.kind) !== -1 && !isGroupAdmin(chats[id], env.from)) return;
 
   switch (p.kind) {
     case "text":
@@ -354,7 +367,7 @@ async function handleIncoming(env) {
     case "receipt":
       return applyReceipt(id, p);
     case "typing":
-      return showTyping(id, env.from);
+      return showTyping(id, env.from, !!p.rec);
     case "ttl":
       return setTtl(id, Number(p.ttl) || 0, env.from);
     case "renamed":
@@ -383,13 +396,19 @@ function receiveMessage(id, env, p) {
       fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""),
       size: Number(p.size) || 0, n: Number(p.n) || 1, w: p.w, h: p.h, voice: !!p.voice, duration: p.duration,
       sticker: !!p.sticker && /^image\//.test(String(p.type || "")),
+      once: !!p.once && /^image\//.test(String(p.type || "")),
     };
     files.get(m.file.fid).then((blob) => { if (blob) patchMessage(id, m.mid, { file: Object.assign({}, m.file, { ready: true }) }); });
   }
   clearTyping(id, env.from);
+  const mentioned = isGroup(id) && m.text && new RegExp("(^|[^a-z0-9_])@" + me.username + "(?![a-z0-9_])", "i").test(m.text);
+  const c = ensureChat(id);
+  if (c.archived && !c.muted) c.archived = false;
+  if (mentioned) c.mentioned = true;
   addMessage(id, m);
   if (!isGroup(id)) queueReceipt(id, m.mid);
-  notify(id, isGroup(id) ? `${shortName(env.from)} in ${chatTitle(id)}` : chatTitle(id), previewText(m));
+  if (m.effect) playEffect(m.effect);
+  if (!p.silent) notify(id, isGroup(id) ? `${shortName(env.from)} in ${chatTitle(id)}` : chatTitle(id), previewText(m), mentioned);
 }
 
 async function handleChunk(env, p) {
@@ -423,6 +442,12 @@ function cleanExtras(p) {
     if (typeof pv.image === "string" && pv.image.length < 90000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(pv.image)) out.preview.image = pv.image;
   }
   if (p.fwd) out.fwd = true;
+  if (p.once) out.once = true;
+  if (p.silent) out.silent = true;
+  if (typeof p.effect === "string" && EFFECTS.some((e) => e[0] === p.effect)) out.effect = p.effect;
+  if (p.loc && Number.isFinite(p.loc.lat) && Number.isFinite(p.loc.lon) && Math.abs(p.loc.lat) <= 90 && Math.abs(p.loc.lon) <= 180) {
+    out.loc = { lat: Math.round(p.loc.lat * 1e5) / 1e5, lon: Math.round(p.loc.lon * 1e5) / 1e5, acc: Math.min(100000, Math.round(Number(p.loc.acc) || 0)) };
+  }
   return out;
 }
 
@@ -497,6 +522,9 @@ function handleGroupEvent(from, p, ts) {
   const removed = c && !c.pending ? c.members.filter((n) => members.indexOf(n) === -1 && n !== from) : [];
   chats[id] = Object.assign(c || { last: 0, unread: 0, preview: "" }, { type: "group", name, members, pending: false, left: false });
   if (admins.length) chats[id].admins = admins;
+  const wasAdminsOnly = !!(c && c.adminsOnly);
+  chats[id].adminsOnly = !!p.adminsOnly;
+  if (c && !c.pending && wasAdminsOnly !== !!p.adminsOnly) systemMessage(id, p.adminsOnly ? `${shortName(from)} made this an announcement group: only admins can send messages` : `${shortName(from)} let everyone send messages again`, ts);
   if (removed.length) systemMessage(id, `${shortName(from)} removed ${removed.map(shortName).join(", ")}`, ts);
   saveChats();
   if (wasPending) systemMessage(id, `${shortName(from)} added you to "${name}"`, ts);
@@ -525,7 +553,7 @@ async function updateGroup(id, changes) {
   saveChats();
   const everyone = cleanMembers(oldMembers.concat(c.members)).filter((n) => n !== me.username);
   if (c.admins) c.admins = c.admins.filter((n) => c.members.indexOf(n) !== -1);
-  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members, admins: c.admins }));
+  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members, admins: c.admins, adminsOnly: !!c.adminsOnly }));
   renderHeader();
   renderChats();
 }
@@ -553,6 +581,8 @@ function ensureChat(id) {
 function previewText(m) {
   if (m.deleted) return "Message deleted";
   if (m.poll) return "📊 " + m.poll.q;
+  if (m.loc) return "📍 Location";
+  if (m.file && m.file.once) return "📷 View-once photo";
   if (m.sticker) return m.sticker.e + " Sticker";
   if (m.file && m.file.sticker) return "🖼 Sticker";
   if (m.file) {
@@ -633,8 +663,11 @@ function newOutgoing(id, fields) {
 
 const LINK = /\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/i;
 
+let pendingSend = null; // { silent } or { effect } from the send button's menu
+
 function sendText(id, text, extra) {
   const m = newOutgoing(id, Object.assign({ text }, extra));
+  if (m.effect) playEffect(m.effect);
   clearDraft();
   const link = text.match(LINK);
   // A preview is fetched by the home server, once, and sent inside the
@@ -668,6 +701,7 @@ async function sendFile(id, file, extra = {}) {
   let type = file.type || "application/octet-stream";
   let dims = {};
   if (/^image\//.test(type) && !extra.voice && !extra.sticker) {
+    // View-once photos are made smaller like any photo.
     const p = await F.preparePhoto(file);
     blob = p.blob;
     type = p.type || type;
@@ -679,7 +713,7 @@ async function sendFile(id, file, extra = {}) {
   const m = newOutgoing(id, {
     text: extra.caption || "",
     file: Object.assign({ fid, name: file.name || extra.name || "file", type, size: blob.size, n, ready: true }, dims,
-      extra.voice ? { voice: true, duration: extra.duration } : {}, extra.sticker ? { sticker: true } : {}),
+      extra.voice ? { voice: true, duration: extra.duration } : {}, extra.sticker ? { sticker: true } : {}, extra.once ? { once: true } : {}),
   });
   if (extra.fwd) m.fwd = true;
   clearDraft();
@@ -695,10 +729,11 @@ async function deliver(id, m) {
   delivering.add(m.mid);
   try {
     const to = m.pendingTo || recipients(id);
-    const base = { mid: m.mid, text: m.text, reply: m.reply, exp: m.exp, preview: m.preview, fwd: m.fwd || undefined };
+    const base = { mid: m.mid, text: m.text, reply: m.reply, exp: m.exp, preview: m.preview, fwd: m.fwd || undefined,
+      silent: m.silent || undefined, effect: m.effect || undefined, loc: m.loc || undefined };
     const payload = withGroup(id, m.file
       ? Object.assign(base, { kind: "file", fid: m.file.fid, name: m.file.name, type: m.file.type, size: m.file.size, n: m.file.n,
-          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined })
+          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined, once: m.file.once || undefined })
       : m.poll ? Object.assign(base, { kind: "poll", poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi } })
       : m.sticker ? Object.assign(base, { kind: "sticker", sticker: { e: m.sticker.e } })
       : Object.assign(base, { kind: "text" }));
@@ -801,9 +836,11 @@ function applyReceipt(id, p) {
 const typing = new Map(); // chat id -> Map(name -> until)
 let lastTypingSent = 0;
 
-function showTyping(id, from) {
+const recordingVoice = new Set();
+function showTyping(id, from, rec) {
   if (!typing.has(id)) typing.set(id, new Map());
   typing.get(id).set(from, Date.now() + 5000);
+  if (rec) recordingVoice.add(id + ":" + from); else recordingVoice.delete(id + ":" + from);
   renderTyping();
   setTimeout(renderTyping, 5100);
 }
@@ -820,9 +857,11 @@ function renderTyping() {
   const t = active && typing.get(active);
   if (t) for (const [name, until] of t) if (until > now) names.push(name);
   el.hidden = !names.length;
+  const rec = names.some((n) => recordingVoice.has(active + ":" + n));
+  const verb = rec ? "recording a voice message…" : "typing…";
   el.textContent = !names.length ? "" : isGroup(active)
-    ? `${names.map(shortName).join(", ")} ${names.length > 1 ? "are" : "is"} typing…`
-    : "typing…";
+    ? `${names.map(shortName).join(", ")} ${names.length > 1 ? "are" : "is"} ${verb}`
+    : verb;
   $("safety-btn").hidden = !!names.length || isGroup(active || "");
 }
 
@@ -871,13 +910,25 @@ function dayLabel(ts) {
   return d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
 }
 
+let showArchived = false;
+
 function renderChats() {
   const ul = $("contacts");
   clear(ul);
-  const ids = Object.keys(chats).filter((id) => chats[id].last || id === active)
-    .sort((a, b) => (chats[b].last || 0) - (chats[a].last || 0));
+  const all = Object.keys(chats).filter((id) => chats[id].last || id === active || chats[id].draft);
+  const archived = all.filter((id) => chats[id].archived);
+  const ids = all.filter((id) => !!chats[id].archived === showArchived)
+    .sort((a, b) => (chats[b].pinnedChat ? 1 : 0) - (chats[a].pinnedChat ? 1 : 0) || (chats[b].last || 0) - (chats[a].last || 0));
+  if (archived.length || showArchived) {
+    const li = document.createElement("li");
+    li.className = "archive-row";
+    const unread = archived.reduce((n, id) => n + (chats[id].unread || 0), 0);
+    li.textContent = showArchived ? "← Back to chats" : `🗄 Archived (${archived.length})${unread ? ` · ${unread} unread` : ""}`;
+    li.onclick = (e) => { e.stopPropagation(); showArchived = !showArchived; renderChats(); };
+    ul.appendChild(li);
+  }
   for (const id of ids) ul.appendChild(chatRow(id));
-  $("contacts-empty").hidden = ids.length > 0;
+  $("contacts-empty").hidden = ids.length > 0 || showArchived;
 }
 
 function chatRow(id, snippet) {
@@ -890,10 +941,16 @@ function chatRow(id, snippet) {
   const avatar = li.querySelector(".avatar");
   fillAvatar(avatar, id);
   if (!isGroup(id)) refreshProfile(id);
-  li.querySelector("strong").textContent = title + (c.muted ? " 🔕" : "") + (c.blocked ? " (blocked)" : "");
-  li.querySelector("small").textContent = snippet || c.preview || "";
+  li.querySelector("strong").textContent = (c.pinnedChat && !snippet ? "📌 " : "") + title + (c.muted ? " 🔕" : "") + (c.blocked ? " (blocked)" : "");
+  const small = li.querySelector("small");
+  if (!snippet && c.draft && id !== active) {
+    small.textContent = "Draft: " + c.draft;
+    small.classList.add("draft-preview");
+  } else {
+    small.textContent = snippet || c.preview || "";
+  }
   const badge = li.querySelector(".badge");
-  if (c.unread && !snippet) badge.textContent = c.unread; else badge.remove();
+  if ((c.unread || c.markedUnread) && !snippet) badge.textContent = (c.mentioned ? "@ " : "") + (c.unread || ""); else badge.remove();
   return li;
 }
 
@@ -977,6 +1034,26 @@ function renderFile(id, m, bubble) {
   const box = document.createElement("div");
   box.className = "file";
   bubble.appendChild(box);
+  if (f.once) {
+    box.classList.add("loading", "once");
+    if (m.mine) { box.textContent = "📷 View-once photo"; return; }
+    if (m.viewed) { box.textContent = "📷 Opened"; return; }
+    if (!f.ready) { box.textContent = "📷 View-once photo — arriving…"; return; }
+    box.textContent = "📷 View-once photo — tap to open";
+    box.onclick = async (e) => {
+      e.stopPropagation();
+      const url = await blobUrl(f.fid);
+      if (!url) return;
+      openViewer(url, f.name, true);
+      // Gone after this look, like WhatsApp's "view once".
+      setTimeout(() => {
+        files.remove(f.fid);
+        blobUrls.delete(f.fid);
+        patchMessage(id, m.mid, { viewed: true });
+      }, 500);
+    };
+    return;
+  }
   if (f.missing) {
     box.classList.add("loading");
     box.textContent = `${f.voice ? "Voice message" : f.name} — not saved in this browser`;
@@ -1017,7 +1094,19 @@ function renderFile(id, m, bubble) {
       a.preload = "metadata";
       a.onclick = (e) => e.stopPropagation();
       box.appendChild(a);
-      if (f.voice) box.classList.add("voice");
+      if (f.voice) {
+        box.classList.add("voice");
+        const speed = document.createElement("button");
+        speed.className = "speed";
+        speed.textContent = "1×";
+        speed.onclick = (e) => {
+          e.stopPropagation();
+          const next = { 1: 1.5, 1.5: 2, 2: 1 }[a.playbackRate] || 1;
+          a.playbackRate = next;
+          speed.textContent = next + "×";
+        };
+        box.appendChild(speed);
+      }
     } else {
       const a = document.createElement("a");
       a.href = url;
@@ -1080,12 +1169,13 @@ function renderMessage(id, m) {
     }
     if (m.file && m.file.sticker) bubble.classList.add("sticker-img");
     if (m.poll) renderPoll(id, m, bubble);
+    if (m.loc) bubble.appendChild(locationCard(m.loc));
     if (m.file) renderFile(id, m, bubble);
     if (m.text) {
       const t = document.createElement("div");
       t.className = "text";
       if (!m.file && !m.reply && emojiOnly(m.text)) bubble.classList.add("jumbo");
-      linkify(t, m.text);
+      formatText(t, m.text);
       bubble.appendChild(t);
     }
     if (m.preview) bubble.appendChild(previewCard(m.preview));
@@ -1109,7 +1199,7 @@ function renderMessage(id, m) {
   }
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = (m.starred ? "⭐ " : "") + time(m.ts) + (m.edited && !m.deleted ? " · edited" : "") + (m.exp ? " · ⏱" : "");
+  meta.textContent = (m.starred ? "⭐ " : "") + (m.effect ? "✨ " : "") + (m.silent ? "🔕 " : "") + time(m.ts) + (m.edited && !m.deleted ? " · edited" : "") + (m.exp ? " · ⏱" : "");
   const status = document.createElement("span");
   status.className = "status";
   status.textContent = statusLabel(m) ? " · " + statusLabel(m) : "";
@@ -1243,32 +1333,50 @@ function renderHeader() {
   const pinned = c.pinned && findMessage(active, c.pinned);
   $("pinned-bar").hidden = !pinned;
   if (pinned) $("pinned-text").textContent = (pinned.mine ? "You: " : shortName(pinned.from) + ": ") + (previewText(pinned) || "");
-  const status = group ? "" : profileOf(active).status || "";
+  const status = group || active === me.username ? "" : [presenceText(active), profileOf(active).status].filter(Boolean).join(" · ");
   $("peer-status").textContent = status;
   $("peer-status").hidden = !status;
   $("voice-btn").hidden = $("video-btn").hidden = !!c.blocked || (group && !!c.left);
   $("safety-btn").hidden = group;
   $("members-btn").hidden = !group;
   if (group) $("members-btn").textContent = c.left ? "You left this group" : `${(c.members || []).length} members`;
-  const disabled = (group && c.left) || c.blocked;
+  const readOnly = group && c.adminsOnly && !isGroupAdmin(c, me.username);
+  const disabled = (group && c.left) || c.blocked || readOnly;
   $("send-form").classList.toggle("disabled", !!disabled);
   $("send-text").disabled = !!disabled;
-  $("send-text").placeholder = c.blocked ? "You blocked this person" : group && c.left ? "You left this group" : "Message";
+  $("send-text").placeholder = c.blocked ? "You blocked this person" : group && c.left ? "You left this group" : readOnly ? "Only admins can send messages" : "Message";
+  $("voice-btn").hidden = $("video-btn").hidden ||= active === me.username;
+  $("safety-btn").hidden ||= active === me.username;
   renderTyping();
+}
+
+function saveComposerDraft() {
+  if (!active || !chats[active] || draft.mode === "edit") return;
+  const text = $("send-text").value;
+  if ((chats[active].draft || "") === text) return;
+  chats[active].draft = text || undefined;
+  saveChats();
 }
 
 function openChat(id, opts = {}) {
   const scrollTop = $("messages").scrollTop;
-  if (active !== id) clearDraft();
+  if (active !== id) {
+    saveComposerDraft();
+    clearDraft();
+    $("send-text").value = (chats[id] && chats[id].draft) || "";
+    composerChanged();
+  }
   active = id;
   ensureChat(id);
   chats[id].unread = 0;
+  chats[id].markedUnread = false;
+  chats[id].mentioned = false;
   saveChats();
   $("empty").hidden = true;
   $("convo").hidden = false;
   renderHeader();
   applyChatLook(id);
-  if (!isGroup(id)) refreshProfile(id);
+  if (!isGroup(id) && id !== me.username) { refreshProfile(id); refreshPresence(); }
   const list = $("messages");
   clear(list);
   delete list.dataset.day;
@@ -1285,6 +1393,8 @@ function openChat(id, opts = {}) {
 }
 
 function closeChat() {
+  saveComposerDraft();
+  $("send-text").value = "";
   active = null;
   clearDraft();
   document.body.classList.remove("in-convo");
@@ -1312,10 +1422,19 @@ function toast(text) {
   toastTimer = setTimeout(() => ($("toast").hidden = true), 4000);
 }
 
-function notify(id, title, body) {
-  if (chats[id] && chats[id].muted) return;
-  if (!document.hidden) return;
-  Push.showLocal(title, String(body).slice(0, 120), id);
+function inDnd() {
+  const d = settings.dnd;
+  if (!d || !d.on) return false;
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const [a, b] = [d.from, d.to].map((t) => { const [h, m] = String(t || "0:0").split(":").map(Number); return h * 60 + m; });
+  return a <= b ? mins >= a && mins < b : mins >= a || mins < b;
+}
+
+function notify(id, title, body, mentioned) {
+  if (chats[id] && chats[id].muted && !mentioned) return;
+  if (!document.hidden || inDnd()) return;
+  Push.showLocal((mentioned ? "@ " : "") + title, String(body).slice(0, 120), id);
 }
 
 // ---------- message menu: react, reply, copy, edit, delete ----------
@@ -1358,6 +1477,11 @@ function openMessageMenu(id, mid, e) {
   };
   const canSend = !(chats[id] && (chats[id].left || chats[id].blocked));
   if (canSend) add("Reply", () => startReply(id, m));
+  if (isGroup(id) && !m.mine && m.from) add("Reply privately", () => {
+    openChat(m.from);
+    ensureChat(m.from);
+    startReply(m.from, m);
+  });
   if (m.text) add("Copy text", () => copyText(m.text).then(() => toast("Copied.")));
   if (!m.deleted && m.status !== "scheduled") add("Forward", () => openForward(id, m));
   add(m.starred ? "Unstar" : "⭐ Star", () => { patchMessage(id, mid, { starred: !m.starred }); toast(m.starred ? "Unstarred." : "Starred. Find it in ⋯ → Starred messages."); });
@@ -1463,7 +1587,9 @@ function submitMessage() {
   }
   if (!text) return;
   $("send-text").value = "";
-  sendText(active, text.slice(0, 8000));
+  if (chats[active]) chats[active].draft = undefined;
+  sendText(active, text.slice(0, 8000), pendingSend);
+  pendingSend = null;
   composerChanged();
 }
 
@@ -1498,7 +1624,10 @@ async function startVoice() {
     if (s >= 300) stopVoice(true);
   };
   tick();
-  recordTimer = setInterval(tick, 500);
+  recordTimer = setInterval(() => {
+    tick();
+    if (settings.typing && active && Date.now() - lastTypingSent > 3000) { lastTypingSent = Date.now(); sendEphemeral(active, { kind: "typing", rec: true }); }
+  }, 500);
 }
 
 async function stopVoice(send) {
@@ -1622,7 +1751,15 @@ function mainChatMenu() {
   const c = chats[id];
   const group = isGroup(id);
   const items = [];
-  if (!group) items.push(["View profile", () => openProfile(id)]);
+  if (!group && id !== me.username) items.push(["View profile", () => openProfile(id)]);
+  items.push(["Photos, files and links", () => openMedia(id)]);
+  items.push([c.pinnedChat ? "Unpin chat" : "📌 Pin chat to the top", () => { c.pinnedChat = !c.pinnedChat; saveChats(); renderChats(); }]);
+  items.push([c.archived ? "Unarchive chat" : "🗄 Archive chat", () => {
+    c.archived = !c.archived;
+    saveChats();
+    if (c.archived) { closeChat(); toast("Archived. It comes back when someone writes (unless it's muted)."); } else renderChats();
+  }]);
+  items.push(["Mark as unread", () => { c.markedUnread = true; saveChats(); closeChat(); }]);
   items.push(["Background and animation", () => editChatLook(id)]);
   items.push(["Search in this chat", () => {
     $("chat-search-bar").hidden = false;
@@ -1643,6 +1780,10 @@ function mainChatMenu() {
   if (group) {
     if (!c.left) items.push([`Members (${c.members.length})`, () => memberMenu(id)]);
     if (!c.left && isGroupAdmin(c, me.username)) {
+      items.push([c.adminsOnly ? "Let everyone send messages" : "Only admins can send messages", () => {
+        updateGroup(id, { adminsOnly: !c.adminsOnly });
+        systemMessage(id, c.adminsOnly ? "You made this an announcement group: only admins can send messages" : "Everyone can send messages again");
+      }]);
       items.push([c.invite ? "Invite link (copy)" : "Make an invite link", () => groupInviteLink(id, false)]);
       if (c.invite) items.push(["Turn off the invite link", () => { c.invite = null; saveChats(); toast("The old link no longer works."); }]);
     }
@@ -2096,10 +2237,11 @@ function stopRinging() {
 
 // ---------- photo viewer ----------
 
-function openViewer(url, name) {
+function openViewer(url, name, once) {
   $("viewer-img").src = url;
   $("viewer-save").href = url;
   $("viewer-save").download = name || "photo";
+  $("viewer-save").hidden = !!once;
   $("viewer").hidden = false;
 }
 $("viewer-close").onclick = () => ($("viewer").hidden = true);
@@ -2531,6 +2673,7 @@ function openSettings() {
   $("set-typing").checked = settings.typing;
   $("notify-btn").textContent = Push.status();
   fillLookControls();
+  fillPrivacyControls();
   openDialog($("settings-dialog"));
 }
 
@@ -2623,6 +2766,7 @@ function start() {
   });
   Browser.init({ conn: () => conn, toast });
   if (!store.get("privacyNotice4", false)) openDialog($("privacy-dialog"));
+  lockNow();
   $("backup-banner").hidden = store.get("backedUp", false);
   renderChats();
   updateTitle();
@@ -3107,3 +3251,363 @@ function showStarred() {
   close.appendChild(b);
   results.insertBefore(close, results.firstChild);
 }
+
+// ---------- text formatting: **bold** _italic_ ~strike~ `code` ```block``` ||spoiler|| @mention ----------
+
+let fmtRe = null;
+function formatText(el, text) {
+  // Links first, so formatting marks inside addresses are left alone.
+  const linkRe = /\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/gi;
+  let last = 0;
+  let m;
+  while ((m = linkRe.exec(text))) {
+    if (m.index > last) formatPlain(el, text.slice(last, m.index));
+    linkify(el, m[0]);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) formatPlain(el, text.slice(last));
+}
+
+function formatPlain(el, text) {
+  if (!fmtRe) {
+    try {
+      fmtRe = new RegExp("(```[\\s\\S]+?```|`[^`\\n]+`|\\*\\*[^*\\n]+?\\*\\*|(?<![\\w*])\\*[^*\\n]+?\\*(?![\\w*])|(?<![\\w])_[^_\\n]+?_(?![\\w])|~[^~\\n]+?~|\\|\\|[^|\\n]+?\\|\\||@[a-z0-9_]{3,20})", "gi");
+    } catch {
+      // Older browsers: no look-behind, so only the unambiguous marks.
+      fmtRe = /(```[\s\S]+?```|`[^`\n]+`|\*\*[^*\n]+?\*\*|~[^~\n]+?~|\|\|[^|\n]+?\|\||@[a-z0-9_]{3,20})/gi;
+    }
+  }
+  fmtRe.lastIndex = 0;
+  let last = 0;
+  let m;
+  while ((m = fmtRe.exec(text))) {
+    if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const t = m[0];
+    let node;
+    if (t.startsWith("```")) { node = document.createElement("pre"); node.textContent = t.slice(3, -3).replace(/^\n/, ""); }
+    else if (t[0] === "`") { node = document.createElement("code"); node.textContent = t.slice(1, -1); }
+    else if (t.startsWith("**")) { node = document.createElement("strong"); formatPlain(node, t.slice(2, -2)); fmtRe.lastIndex = m.index + t.length; }
+    else if (t[0] === "*" || t[0] === "_") { node = document.createElement("em"); node.textContent = t.slice(1, -1); }
+    else if (t[0] === "~") { node = document.createElement("s"); node.textContent = t.slice(1, -1); }
+    else if (t.startsWith("||")) {
+      node = document.createElement("span");
+      node.className = "spoiler";
+      node.textContent = t.slice(2, -2);
+      node.title = "Tap to show";
+      node.onclick = (e) => { e.stopPropagation(); node.classList.add("shown"); };
+    } else {
+      node = document.createElement("span");
+      node.className = "mention" + (t.slice(1).toLowerCase() === me.username ? " me" : "");
+      node.textContent = t;
+    }
+    el.appendChild(node);
+    last = m.index + t.length;
+    fmtRe.lastIndex = last;
+  }
+  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+}
+
+// ---------- send effects (like iMessage) ----------
+
+const EFFECTS = [["confetti", "🎊 Confetti"], ["fireworks", "🎆 Fireworks"], ["hearts", "💖 Hearts"], ["balloons", "🎈 Balloons"], ["lasers", "🔦 Lasers"], ["snow", "❄️ Snow"], ["shake", "📳 Shake"]];
+
+function playEffect(name) {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const layer = document.createElement("div");
+  layer.className = "effect effect-" + name;
+  const pieces = { confetti: 70, fireworks: 60, hearts: 30, balloons: 18, snow: 60, lasers: 8 }[name] || 0;
+  const emoji = { hearts: ["💖", "💕", "❤️", "💗"], balloons: ["🎈", "🎈", "🎈", "🎉"], snow: ["❄️", "❅", "❆"] }[name];
+  for (let i = 0; i < pieces; i++) {
+    const p = document.createElement("span");
+    if (emoji) p.textContent = emoji[i % emoji.length];
+    p.style.left = Math.random() * 100 + "%";
+    p.style.animationDelay = (Math.random() * 0.8).toFixed(2) + "s";
+    p.style.setProperty("--hue", Math.floor(Math.random() * 360));
+    p.style.setProperty("--dx", (Math.random() * 2 - 1).toFixed(2));
+    p.style.setProperty("--dy", (Math.random() * 2 - 1).toFixed(2));
+    if (name === "fireworks") { p.style.left = (20 + (i % 3) * 30) + "%"; p.style.top = (25 + (i % 2) * 20) + "%"; }
+    if (name === "lasers") p.style.top = (10 + i * 11) + "%";
+    layer.appendChild(p);
+  }
+  if (name === "shake") document.body.classList.add("shake");
+  document.body.appendChild(layer);
+  setTimeout(() => { layer.remove(); document.body.classList.remove("shake"); }, 3500);
+}
+
+// ---------- location ----------
+
+function locationCard(loc) {
+  const box = document.createElement("div");
+  box.className = "loc-card";
+  const title = document.createElement("strong");
+  title.textContent = "📍 Location" + (loc.acc ? ` (within ${loc.acc} m)` : "");
+  const coords = document.createElement("small");
+  coords.textContent = `${loc.lat}, ${loc.lon}`;
+  box.append(title, coords);
+  const links = document.createElement("div");
+  for (const [label, url] of [
+    ["OpenStreetMap", `https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lon}#map=17/${loc.lat}/${loc.lon}`],
+    ["Google Maps", `https://www.google.com/maps?q=${loc.lat},${loc.lon}`],
+    ["Apple Maps", `https://maps.apple.com/?ll=${loc.lat},${loc.lon}&q=Location`],
+  ]) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = label;
+    a.onclick = (e) => e.stopPropagation();
+    links.appendChild(a);
+  }
+  box.appendChild(links);
+  return box;
+}
+
+function shareLocation() {
+  if (!active) return;
+  if (!navigator.geolocation) return toast("This browser can't share a location.");
+  if (!confirm(`Send your current location to ${chatTitle(active)}? (Once, not live.)`)) return;
+  toast("Finding your location…");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => sendSpecial(active, { loc: { lat: Math.round(pos.coords.latitude * 1e5) / 1e5, lon: Math.round(pos.coords.longitude * 1e5) / 1e5, acc: Math.round(pos.coords.accuracy || 0) } }),
+    () => toast("Couldn't get your location. Check the browser's location permission."),
+    { enableHighAccuracy: true, timeout: 15000 },
+  );
+}
+
+// ---------- shared media in a chat ----------
+
+function openMedia(id) {
+  const list = loadChat(id).filter((m) => !m.deleted && !m.system);
+  const grid = $("media-photos");
+  const filesBox = $("media-files");
+  const links = $("media-links");
+  [grid, filesBox, links].forEach(clear);
+  for (const m of list.slice().reverse()) {
+    if (m.file && !m.file.once && !m.file.missing && /^(image|video)\//.test(m.file.type) && !m.file.sticker) {
+      const b = document.createElement("button");
+      b.className = "media-thumb";
+      blobUrl(m.file.fid).then((url) => {
+        if (!url) return b.remove();
+        const el = document.createElement(/^video/.test(m.file.type) ? "video" : "img");
+        el.src = url;
+        b.appendChild(el);
+      });
+      b.onclick = () => { closeDialog($("media-dialog")); jumpTo(m.mid); };
+      grid.appendChild(b);
+    } else if (m.file && !m.file.sticker && !m.file.once) {
+      const b = document.createElement("button");
+      b.className = "media-row";
+      b.textContent = (m.file.voice ? "🎤 Voice message" : "📎 " + m.file.name) + " · " + new Date(m.ts).toLocaleDateString();
+      b.onclick = () => { closeDialog($("media-dialog")); jumpTo(m.mid); };
+      filesBox.appendChild(b);
+    }
+    const found = (m.text || "").match(/\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/gi) || [];
+    for (const url of found) {
+      const a = document.createElement("a");
+      a.className = "media-row";
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
+      a.textContent = url;
+      links.appendChild(a);
+    }
+  }
+  for (const [box, empty] of [[grid, "No photos or videos."], [filesBox, "No files."], [links, "No links."]]) {
+    if (!box.children.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = empty; box.appendChild(p); }
+  }
+  $("media-title").textContent = chatTitle(id);
+  openDialog($("media-dialog"));
+}
+$("media-close").onclick = () => closeDialog($("media-dialog"));
+
+// ---------- online / last seen ----------
+
+const presence = new Map(); // name -> { online, seen }
+
+function presenceText(name) {
+  const p = presence.get(name);
+  if (!p) return "";
+  if (p.online) return "online";
+  if (!p.seen) return "";
+  const mins = Math.floor((Date.now() - p.seen) / 60000);
+  if (mins < 1) return "last seen just now";
+  if (mins < 60) return `last seen ${mins} min ago`;
+  const d = new Date(p.seen);
+  return d.toDateString() === new Date().toDateString()
+    ? "last seen today at " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : "last seen " + d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+async function refreshPresence() {
+  if (!conn || !conn.ready || !flags.primary || document.hidden || !active || isGroup(active) || active === me.username) return;
+  const r = await conn.op("presence", { users: [active] });
+  if (r && r.presence) {
+    presence.clear();
+    for (const [n, v] of Object.entries(r.presence)) presence.set(n, v);
+    renderHeader();
+  }
+}
+setInterval(refreshPresence, 30e3);
+
+// ---------- app lock ----------
+
+const LOCK_ITER = 150000;
+async function pinHash(pin, salt) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: LOCK_ITER }, key, 256);
+  return Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+let lockedOut = 0;
+let hiddenAt = 0;
+function lockNow() {
+  if (!store.get("lock", null)) return;
+  $("lock").hidden = false;
+  $("lock-pin").value = "";
+  $("lock-error").textContent = "";
+  setTimeout(() => $("lock-pin").focus(), 50);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) hiddenAt = Date.now();
+  else if (store.get("lock", null) && hiddenAt && Date.now() - hiddenAt >= (settings.lockAfter || 0) * 1000) lockNow();
+});
+$("lock-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const lock = store.get("lock", null);
+  if (!lock) return ($("lock").hidden = true);
+  if (Date.now() < lockedOut) return ($("lock-error").textContent = "Too many tries. Wait a moment.");
+  if ((await pinHash($("lock-pin").value, lock.salt)) === lock.hash) {
+    $("lock").hidden = true;
+    lock.fails = 0;
+    store.set("lock", lock);
+    return;
+  }
+  lock.fails = (lock.fails || 0) + 1;
+  store.set("lock", lock);
+  if (lock.fails % 5 === 0) lockedOut = Date.now() + 30e3 * (lock.fails / 5);
+  $("lock-error").textContent = "Wrong PIN.";
+  $("lock-pin").select();
+};
+$("lock-btn").onclick = async () => {
+  if (store.get("lock", null)) {
+    if (!confirm("Turn off the app lock?")) return;
+    store.remove("lock");
+    $("lock-btn").textContent = "Set a PIN";
+    return toast("App lock is off.");
+  }
+  const pin = prompt("Choose a PIN (4 to 12 digits). You'll need it to open FreeMessenger on this device:");
+  if (!pin) return;
+  if (!/^\d{4,12}$/.test(pin)) return toast("Use 4 to 12 digits.");
+  if (prompt("Type the PIN again:") !== pin) return toast("The PINs didn't match.");
+  const salt = uuid();
+  store.set("lock", { salt, hash: await pinHash(pin, salt) });
+  $("lock-btn").textContent = "Turn off";
+  toast("App lock is on.");
+};
+$("set-lock-after").onchange = () => { settings.lockAfter = Number($("set-lock-after").value); store.set("settings", settings); };
+
+// ---------- privacy and Do Not Disturb ----------
+
+$("set-seen").onchange = async () => {
+  settings.hideSeen = !$("set-seen").checked;
+  store.set("settings", settings);
+  if (conn && conn.ready && flags.primary) await conn.op("privacy", { hideSeen: settings.hideSeen });
+  presence.clear();
+  renderHeader();
+};
+function saveDnd() {
+  settings.dnd = { on: $("set-dnd").checked, from: $("set-dnd-from").value || "22:00", to: $("set-dnd-to").value || "07:00" };
+  store.set("settings", settings);
+  // The service worker reads this too, so closed-app notifications are silent then.
+  files.put("dnd", settings.dnd);
+}
+["set-dnd", "set-dnd-from", "set-dnd-to"].forEach((id) => ($(id).onchange = saveDnd));
+
+function fillPrivacyControls() {
+  $("set-seen").checked = !settings.hideSeen;
+  const d = settings.dnd || { on: false, from: "22:00", to: "07:00" };
+  $("set-dnd").checked = !!d.on;
+  $("set-dnd-from").value = d.from;
+  $("set-dnd-to").value = d.to;
+  $("lock-btn").textContent = store.get("lock", null) ? "Turn off" : "Set a PIN";
+  $("set-lock-after").value = String(settings.lockAfter);
+}
+
+// ---------- send options: silent, effects ----------
+
+function openSendOptions(e) {
+  e.preventDefault();
+  if (!active || !$("send-text").value.trim()) return toast("Type a message first, then pick how to send it.");
+  const items = [["🔕 Send without sound", () => { pendingSend = { silent: true }; submitMessage(); }]];
+  for (const [k, label] of EFFECTS) items.push([`Send with ${label}`, () => { pendingSend = { effect: k }; submitMessage(); }]);
+  showChatMenu(items);
+}
+$("send-btn").addEventListener("contextmenu", openSendOptions);
+let pressTimer = null;
+$("send-btn").addEventListener("touchstart", (e) => { pressTimer = setTimeout(() => openSendOptions(e), 550); }, { passive: false });
+$("send-btn").addEventListener("touchend", () => clearTimeout(pressTimer));
+$("send-options-btn").onclick = (e) => { e.stopPropagation(); openSendOptions(e); };
+
+// ---------- view-once photos ----------
+
+$("attach-once-btn").onclick = () => $("once-file").click();
+$("once-file").onchange = (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f || !active) return;
+  if (!/^image\//.test(f.type)) return toast("View-once works with photos.");
+  sendFile(active, f, { once: true });
+  toast("Sent. They can open it once. (The admin copy still applies.)");
+};
+$("attach-loc-btn").onclick = shareLocation;
+$("saved-btn").onclick = () => { ensureChat(me.username); openChat(me.username); };
+
+// ---------- @mention suggestions in groups ----------
+
+function mentionSuggest() {
+  const box = $("mention-list");
+  const ta = $("send-text");
+  const before = ta.value.slice(0, ta.selectionStart || 0);
+  const m = before.match(/(^|\s)@([a-z0-9_]{0,20})$/i);
+  if (!active || !isGroup(active) || !m) { box.hidden = true; return; }
+  const q = m[2].toLowerCase();
+  const names = (chats[active].members || []).filter((n) => n !== me.username && (n.indexOf(q) === 0 || shortName(n).toLowerCase().indexOf(q) !== -1)).slice(0, 8);
+  clear(box);
+  if (!names.length) { box.hidden = true; return; }
+  for (const n of names) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = shortName(n) + (shortName(n) !== "@" + n ? ` (@${n})` : "");
+    b.onmousedown = (e) => {
+      e.preventDefault();
+      const start = before.length - q.length;
+      ta.value = ta.value.slice(0, start) + n + " " + ta.value.slice(ta.selectionStart);
+      ta.selectionStart = ta.selectionEnd = start + n.length + 1;
+      box.hidden = true;
+      composerChanged();
+    };
+    box.appendChild(b);
+  }
+  box.hidden = false;
+}
+$("send-text").addEventListener("input", mentionSuggest);
+$("send-text").addEventListener("blur", () => setTimeout(() => ($("mention-list").hidden = true), 150));
+
+// ---------- keyboard shortcuts ----------
+
+function visibleChatIds() {
+  return Array.from(document.querySelectorAll("#contacts li[data-id]")).map((li) => li.dataset.id);
+}
+document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); $("search").focus(); return; }
+  if (mod && e.key.toLowerCase() === "e" && active) { e.preventDefault(); toggleEmoji(); return; }
+  if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    const ids = visibleChatIds();
+    if (!ids.length) return;
+    e.preventDefault();
+    const i = ids.indexOf(active);
+    const next = e.key === "ArrowDown" ? ids[Math.min(ids.length - 1, i + 1)] : ids[Math.max(0, i === -1 ? 0 : i - 1)];
+    if (next) openChat(next);
+  }
+});
