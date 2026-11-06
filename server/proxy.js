@@ -93,7 +93,7 @@ function fetchOnce(target) {
   });
 }
 
-async function fetchFollow(target) {
+export async function fetchFollow(target) {
   let url = target;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     const r = await fetchOnce(url);
@@ -248,4 +248,47 @@ function sendResource(res, r, proxyBase) {
   // Anything else (scripts, programs, unknown files) isn't passed along.
   res.writeHead(415, { "Content-Type": "text/plain" });
   res.end("");
+}
+
+// ---------- link previews ----------
+//
+// The sender's app asks for a preview when it sends a link, and the preview
+// travels inside the encrypted message, so the person receiving it never
+// contacts the site. Only the title, a short description and a small picture.
+
+function metaContent(html, names) {
+  for (const n of names) {
+    const re = new RegExp(`<meta[^>]+(?:property|name)\\s*=\\s*["']${n}["'][^>]*>`, "i");
+    const tag = html.match(re);
+    if (tag) {
+      const c = tag[0].match(/content\s*=\s*"([^"]*)"|content\s*=\s*'([^']*)'/i);
+      if (c) return unescapeAttr(c[1] ?? c[2] ?? "").trim();
+    }
+  }
+  return "";
+}
+
+export async function linkPreview(target) {
+  const r = await fetchFollow(target);
+  const type = String(r.headers["content-type"] || "").toLowerCase();
+  if (!type.includes("text/html")) return null;
+  const html = decode(r.body.subarray(0, 600000), type);
+  const title = metaContent(html, ["og:title", "twitter:title"]) || ((html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || "").trim();
+  if (!title) return null;
+  const out = {
+    url: r.url,
+    site: metaContent(html, ["og:site_name"]) || new URL(r.url).hostname.replace(/^www\./, ""),
+    title: unescapeAttr(title).slice(0, 200),
+    desc: metaContent(html, ["og:description", "twitter:description", "description"]).slice(0, 300),
+  };
+  const img = metaContent(html, ["og:image", "og:image:url", "twitter:image"]);
+  const abs = img && absolute(img, r.url);
+  if (abs) {
+    try {
+      const pic = await fetchFollow(abs);
+      const ptype = String(pic.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+      if (/^image\/(jpeg|png|webp)$/.test(ptype) && pic.body.length <= 60000) out.image = `data:${ptype};base64,${pic.body.toString("base64")}`;
+    } catch {}
+  }
+  return out;
 }

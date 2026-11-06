@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer } from "ws";
 import * as S from "../relay/src/shared.js";
-import { proxyPage, proxyResource, proxyAllowed } from "./proxy.js";
+import { proxyPage, proxyResource, proxyAllowed, linkPreview } from "./proxy.js";
 
 const DATA = path.resolve(process.argv[2] || "data");
 const CONFIG_FILE = path.join(DATA, "config.json");
@@ -73,6 +73,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS announcements (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, text TEXT NOT NULL, by TEXT);
   CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, uses INTEGER NOT NULL, used INTEGER DEFAULT 0, created INTEGER, note TEXT);
   CREATE TABLE IF NOT EXISTS usage (username TEXT PRIMARY KEY, bytes INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS scheduled (
+    id TEXT PRIMARY KEY, sender TEXT NOT NULL, recipient TEXT NOT NULL, at INTEGER NOT NULL,
+    body TEXT NOT NULL, escrow TEXT, meta TEXT, hint TEXT
+  );
+  CREATE INDEX IF NOT EXISTS scheduled_at ON scheduled (at);
 `);
 // Columns added after the first release.
 {
@@ -301,10 +306,33 @@ function send(a, msg) {
   const hint = msg.hint === "msg" || msg.hint === "call" ? msg.hint : undefined;
   if (!S.allowSend(limiter, a.username, hint, S.cleanMeta(msg.meta))) return { error: "Slow down: one message a second.", slow: true };
   if (!msg.ephemeral && used > CAP_BYTES) return { error: "The server's storage is full. Tell the admin." };
+  // Scheduled: kept here (still encrypted) and sent at that time, even if the sender is offline.
+  if (!msg.ephemeral && Number.isFinite(msg.at) && msg.at > Date.now() + 5000) {
+    if (msg.at > Date.now() + 366 * 86400e3) return { error: "You can schedule up to a year ahead." };
+    if (q("SELECT COUNT(*) AS n FROM scheduled WHERE sender = ?").get(a.username).n >= 500) return { error: "You have too many scheduled messages." };
+    const id = crypto.randomUUID();
+    q("INSERT INTO scheduled (id, sender, recipient, at, body, escrow, meta, hint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, a.username, to, Math.round(msg.at), msg.body, msg.escrow || null, JSON.stringify(S.cleanMeta(msg.meta) || null), hint || null);
+    return { scheduled: true, sid: id };
+  }
   const env = { id: crypto.randomUUID(), from: a.username, ts: Date.now(), ephemeral: !!msg.ephemeral, body: msg.body };
   if (!env.ephemeral) archive(a.username, to, env, msg.escrow, S.cleanMeta(msg.meta));
   return { id: env.id, ts: env.ts, ...deliver(to, env, hint) };
 }
+
+// ---------- scheduled messages ----------
+
+function sendScheduled() {
+  for (const row of q("SELECT * FROM scheduled WHERE at <= ? ORDER BY at LIMIT 200").all(Date.now())) {
+    q("DELETE FROM scheduled WHERE id = ?").run(row.id);
+    const target = getAccount(row.recipient);
+    if (!target || target.status === "banned") continue;
+    const env = { id: crypto.randomUUID(), from: row.sender, ts: Date.now(), ephemeral: false, body: row.body };
+    archive(row.sender, row.recipient, env, row.escrow, JSON.parse(row.meta || "null"));
+    deliver(row.recipient, env, row.hint || undefined);
+  }
+}
+setInterval(sendScheduled, 10e3);
 
 // ---------- storage per person ----------
 
@@ -376,6 +404,21 @@ async function op(a, type, msg, sess) {
   }
   if (type === "history") return history(a.username, msg);
   if (type === "announcements") return { announcements: announcementsSince(msg.after) };
+  if (type === "unschedule") {
+    const ids = (Array.isArray(msg.sids) ? msg.sids : []).slice(0, 100);
+    let n = 0;
+    for (const id of ids) n += q("DELETE FROM scheduled WHERE id = ? AND sender = ?").run(String(id), a.username).changes;
+    return { ok: true, removed: n };
+  }
+  if (type === "preview") {
+    if (!limiter.take("p:" + a.username, 0.5, 20)) return { error: "slow down" };
+    try {
+      const p = await linkPreview(String(msg.url || ""));
+      return p ? { preview: p } : { none: true };
+    } catch {
+      return { none: true };
+    }
+  }
   if (type === "report") {
     const reported = String(msg.reported || "").toLowerCase();
     if (!S.USERNAME.test(reported) || reported === a.username) return { error: "Can't report that." };
