@@ -38,6 +38,10 @@
           <span>@</span>
           <input id="signup-name" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="20" placeholder="yourname" required>
         </div>
+        <div id="signup-invite-row" class="handle" hidden>
+          <input id="signup-invite" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="Invite code">
+        </div>
+        <p id="signup-mode-note" class="fine"></p>
         <button type="submit" class="primary">Create account</button>
         <p id="signup-error" class="error" role="alert"></p>
       </form>
@@ -67,6 +71,7 @@
           <button id="logout-btn" class="danger-text">Sign out of this browser</button>
         </div>
       </header>
+      <div id="announce" class="banner announce" hidden></div>
       <div id="backup-banner" class="banner" hidden>
         <p><strong>Save your backup file.</strong> It's the only way to get your account back on a new browser.</p>
         <button id="banner-backup-btn" class="primary small">Download backup</button>
@@ -278,6 +283,9 @@
       <button data-tab="accounts" class="on">Accounts</button>
       <button data-tab="messages">Messages</button>
       <button data-tab="viewer">Web viewer</button>
+      <button data-tab="reports">Reports</button>
+      <button data-tab="alerts">Word alerts</button>
+      <button data-tab="settings">Settings</button>
       <button data-tab="activity">Activity</button>
       <button data-tab="devices">Devices &amp; codes</button>
     </nav>

@@ -149,7 +149,9 @@ async function connect() {
       flags = f;
       store.set("flags", flags);
       applyFlags();
+      if (f.primary) loadAnnouncements();
     },
+    onEvent: (ev) => { if (ev.type === "announce") showAnnouncements([ev]); },
     onFatal: (message) => toast(message || "This browser's keys don't match your account. Restore your backup file."),
   });
   conn = c;
@@ -171,6 +173,55 @@ setInterval(async () => {
     switching = false;
   }
 }, 20e3);
+
+// ---------- announcements from the admin ----------
+
+async function loadAnnouncements() {
+  if (!conn) return;
+  const r = await conn.op("announcements", { after: store.get("annSeen", 0) });
+  if (r && r.announcements && r.announcements.length) showAnnouncements(r.announcements);
+}
+
+function showAnnouncements(list) {
+  const box = $("announce");
+  for (const a of list) {
+    if (a.n <= store.get("annSeen", 0) || box.querySelector(`[data-n="${a.n}"]`)) continue;
+    const item = document.createElement("div");
+    item.className = "announce-item";
+    item.dataset.n = a.n;
+    const title = document.createElement("strong");
+    title.textContent = "📢 From the FreeMessenger admin";
+    const text = document.createElement("p");
+    linkify(text, a.text);
+    const ok = document.createElement("button");
+    ok.className = "ghost small";
+    ok.textContent = "OK";
+    ok.onclick = () => {
+      store.set("annSeen", Math.max(store.get("annSeen", 0), a.n));
+      item.remove();
+      box.hidden = !box.children.length;
+    };
+    item.append(title, text, ok);
+    box.appendChild(item);
+  }
+  box.hidden = !box.children.length;
+}
+
+// ---------- reporting a message ----------
+
+async function reportMessage(id, m) {
+  const reason = prompt(`Report this message from ${shortName(m.from)} to the admin? Say what's wrong (optional):`, "");
+  if (reason === null) return;
+  const context = loadChat(id).filter((x) => !x.system && !x.deleted).slice(-15).map((x) => ({
+    from: x.mine ? me.username : x.from || id, ts: x.ts, text: x.text || "", file: x.file ? x.file.name : undefined,
+  }));
+  const r = conn && conn.ready ? await conn.op("report", {
+    reported: m.from, reason,
+    message: { from: m.from, ts: m.ts, text: m.text || "", file: m.file ? m.file.name : undefined, chat: isGroup(id) ? chatTitle(id) : null },
+    context,
+  }) : { error: "You're offline." };
+  toast(r && r.error ? r.error : "Reported. Thanks — the admin will look at it.");
+}
 
 function applyFlags() {
   $("admin-btn").hidden = !flags.admin;
@@ -1108,6 +1159,7 @@ function openMessageMenu(id, mid, e) {
     deleteMessage(id, mid, true);
     sendControlToChat(id, { kind: "delete", mid });
   }, "danger-text");
+  if (!m.mine && m.from) add("Report to admin", () => reportMessage(id, m), "danger-text");
   add("Delete for me", () => deleteMessage(id, mid, false), "danger-text");
   menu.hidden = false;
   const r = menu.getBoundingClientRect();
@@ -2136,7 +2188,7 @@ $("signup-form").onsubmit = async (e) => {
   try {
     const identity = await E2E.createIdentity(name);
     await Relays.pick();
-    await api("/api/register", { username: name, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub });
+    await api("/api/register", { username: name, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub, invite: $("signup-invite").value.trim() });
     me = identity;
     store.set("identity", me);
     store.set("privacyNotice4", true);
@@ -2314,4 +2366,12 @@ if (me) {
   $("welcome").hidden = false;
   const hash = location.hash.slice(1).toLowerCase();
   if (USERNAME.test(hash)) $("invite-note").textContent = `@${hash} invited you. Pick a username to message them.`;
+  // Sign-ups may need an invite code or the admin's approval.
+  Relays.pick().then(() => api("/api/signup")).then((r) => {
+    const code = new URLSearchParams(location.search).get("invite");
+    $("signup-invite-row").hidden = r.mode !== "invite";
+    if (code) $("signup-invite").value = code;
+    $("signup-mode-note").textContent = r.mode === "approval" ? "New accounts are checked by the admin before they can send messages."
+      : r.mode === "closed" ? "Sign-ups are closed right now." : r.mode === "invite" ? "You need an invite code to sign up." : "";
+  }).catch(() => {});
 }

@@ -8,12 +8,14 @@
 #   -Admin    your FreeMessenger username (several: "name1,name2")
 #   -Folder   where everything goes (default E:\FreeMessenger)
 #   -CapGB    the most storage messages may use (default 100)
+#   -BackupFolder  where nightly database copies go, ideally another drive (default H:\FreeMessenger-backups)
 #   -NoTurn   skip the TURN server
 
 param(
   [Parameter(Mandatory = $true)] [string]$Admin,
   [string]$Folder = "E:\FreeMessenger",
   [int]$CapGB = 100,
+  [string]$BackupFolder = "H:\FreeMessenger-backups",
   [switch]$NoTurn
 )
 $ErrorActionPreference = "Stop"
@@ -40,10 +42,14 @@ if (-not (Test-Path $cloudflared)) {
   $cloudflared = "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe"
 }
 
-node "$app\server\setup.mjs" $data --admin $Admin --cap $CapGB --cloudflared $cloudflared | Tee-Object -Variable setupOut
+node "$app\server\setup.mjs" $data --admin $Admin --cap $CapGB --cloudflared $cloudflared --backup-dir $BackupFolder | Tee-Object -Variable setupOut
 if ($LASTEXITCODE) { throw "setup failed" }
 # The data folder holds the sync key and TURN secret: only this account may read it.
 icacls $data /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
+if ($BackupFolder) {
+  New-Item -ItemType Directory -Force -Path $BackupFolder | Out-Null
+  icacls $BackupFolder /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
+}
 
 if (-not $NoTurn) {
   Write-Host "Starting the TURN server (Docker)"

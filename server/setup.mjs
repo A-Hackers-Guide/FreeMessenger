@@ -28,6 +28,7 @@ const config = {
   backup: opt("backup", old.backup || "https://freemessenger-relay.a-hackers-guide.workers.dev"),
   cloudflared: opt("cloudflared", old.cloudflared || ""),
   publicUrl: opt("public-url", old.publicUrl || ""),
+  backupDir: opt("backup-dir", old.backupDir || ""),
   turn: old.turn || { secret: crypto.randomBytes(32).toString("hex"), port: Number(opt("turn-port", 3478)) },
   syncKey,
   adminPins: old.adminPins || {},

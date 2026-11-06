@@ -380,3 +380,11 @@ body.panel-open #app { visibility: hidden; }
 .trust-row { font-size: 14px; display: flex; gap: 8px; align-items: center; justify-content: center; }
 .code-card { max-width: 320px; text-align: center; gap: 4px; }
 .big-code { font: 700 40px/1.2 ui-monospace, Menlo, monospace !important; letter-spacing: .08em; }
+.announce { display: grid; gap: 8px; }
+.announce-item { display: grid; gap: 4px; justify-items: start; }
+.announce-item p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#signup-mode-note:empty { display: none; }
+.admin-form { display: grid; gap: 8px; max-width: 560px; }
+.admin-form textarea, .admin-form select, .admin-form input { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--panel); outline: none; font: inherit; color: inherit; }
+.admin-form .row > * { flex: none; }
+.hl { background: #f5b40066; border-radius: 3px; }

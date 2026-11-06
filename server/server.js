@@ -66,7 +66,22 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS proxy_log (n INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, url TEXT, ts INTEGER);
   CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, text TEXT);
   CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+  CREATE TABLE IF NOT EXISTS reports (
+    n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, reporter TEXT NOT NULL, reported TEXT NOT NULL,
+    reason TEXT, message TEXT, context TEXT, status TEXT DEFAULT 'open'
+  );
+  CREATE TABLE IF NOT EXISTS announcements (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, text TEXT NOT NULL, by TEXT);
+  CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, uses INTEGER NOT NULL, used INTEGER DEFAULT 0, created INTEGER, note TEXT);
+  CREATE TABLE IF NOT EXISTS usage (username TEXT PRIMARY KEY, bytes INTEGER NOT NULL DEFAULT 0);
 `);
+// Columns added after the first release.
+{
+  const cols = db.prepare("PRAGMA table_info(accounts)").all().map((c) => c.name);
+  if (!cols.includes("quotaGB")) db.exec("ALTER TABLE accounts ADD COLUMN quotaGB REAL");
+  if (!db.prepare("SELECT 1 FROM usage LIMIT 1").get()) {
+    db.exec("INSERT OR REPLACE INTO usage (username, bytes) SELECT sender, SUM(size) FROM archive GROUP BY sender");
+  }
+}
 const q = (sql) => db.prepare(sql);
 const kvGet = (k, d) => { const r = q("SELECT v FROM kv WHERE k = ?").get(k); return r ? JSON.parse(r.v) : d; };
 const kvSet = (k, v) => q("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(k, JSON.stringify(v));
@@ -247,8 +262,10 @@ function enqueue(to, env, via) {
 
 function archive(from, to, env, escrow, meta) {
   const kind = meta && meta.k === "chunk" ? "chunk" : meta && meta.k === "control" ? "control" : "msg";
-  q("INSERT OR IGNORE INTO archive (id, sender, recipient, ts, body, escrow, kind, fid, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(env.id, from, to, env.ts, env.body, escrow || null, kind, (meta && meta.fid) || null, env.body.length + (escrow || "").length);
+  const size = env.body.length + (escrow || "").length;
+  const r = q("INSERT OR IGNORE INTO archive (id, sender, recipient, ts, body, escrow, kind, fid, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(env.id, from, to, env.ts, env.body, escrow || null, kind, (meta && meta.fid) || null, size);
+  if (r.changes) q("INSERT INTO usage (username, bytes) VALUES (?, ?) ON CONFLICT(username) DO UPDATE SET bytes = bytes + excluded.bytes").run(from, size);
 }
 
 function deliver(to, env, hint) {
@@ -278,6 +295,8 @@ function send(a, msg) {
   if (msg.escrow !== undefined && (typeof msg.escrow !== "string" || msg.escrow.length > S.MAX_ENVELOPE_BYTES)) return { error: "message too large" };
   const fresh = getAccount(a.username);
   if (fresh.status === "frozen") return { error: "Your account is frozen by the admin.", blocked: true };
+  if (fresh.status === "pending") return { error: "Your account is waiting for the admin's approval.", blocked: true };
+  if (!msg.ephemeral && usageOf(a.username) > quotaBytes(fresh)) return { error: "You've used all your storage on this server. Ask the admin for more.", blocked: true };
   if (fresh.timeoutUntil > Date.now()) return { error: `You're timed out until ${new Date(fresh.timeoutUntil).toUTCString()}.`, blocked: true, until: fresh.timeoutUntil };
   const hint = msg.hint === "msg" || msg.hint === "call" ? msg.hint : undefined;
   if (!S.allowSend(limiter, a.username, hint, S.cleanMeta(msg.meta))) return { error: "Slow down: one message a second.", slow: true };
@@ -285,6 +304,15 @@ function send(a, msg) {
   const env = { id: crypto.randomUUID(), from: a.username, ts: Date.now(), ephemeral: !!msg.ephemeral, body: msg.body };
   if (!env.ephemeral) archive(a.username, to, env, msg.escrow, S.cleanMeta(msg.meta));
   return { id: env.id, ts: env.ts, ...deliver(to, env, hint) };
+}
+
+// ---------- storage per person ----------
+
+const usageOf = (name) => (q("SELECT bytes FROM usage WHERE username = ?").get(name) || { bytes: 0 }).bytes;
+function quotaBytes(a) {
+  if (ADMINS.includes(a.username)) return Infinity;
+  const gb = a.quotaGB != null ? a.quotaGB : kvGet("defaultQuotaGB", 5);
+  return gb > 0 ? gb * 1024 ** 3 : Infinity;
 }
 
 const pendingCfAcks = new Map(); // username -> [{id, ts}] of messages that came from the backup relay
@@ -347,6 +375,18 @@ async function op(a, type, msg, sess) {
     return { ok: true };
   }
   if (type === "history") return history(a.username, msg);
+  if (type === "announcements") return { announcements: announcementsSince(msg.after) };
+  if (type === "report") {
+    const reported = String(msg.reported || "").toLowerCase();
+    if (!S.USERNAME.test(reported) || reported === a.username) return { error: "Can't report that." };
+    const recent = q("SELECT COUNT(*) AS n FROM reports WHERE reporter = ? AND ts > ?").get(a.username, Date.now() - 3600e3).n;
+    if (recent >= 20) return { error: "You've sent a lot of reports. Try again later." };
+    q("INSERT INTO reports (ts, reporter, reported, reason, message, context) VALUES (?, ?, ?, ?, ?, ?)").run(
+      Date.now(), a.username, reported, String(msg.reason || "").slice(0, 500),
+      JSON.stringify(msg.message || {}).slice(0, 20000), JSON.stringify(Array.isArray(msg.context) ? msg.context.slice(-15) : []).slice(0, 60000));
+    event(`@${a.username} reported @${reported}`);
+    return { ok: true };
+  }
   if (type === "proxy-ticket") {
     if (!proxyAllowed(flags(getAccount(a.username)))) return { error: "The admin hasn't given you the web viewer." };
     for (const [t, v] of proxyTickets) if (v.until < Date.now()) proxyTickets.delete(t);
@@ -411,12 +451,13 @@ function history(name, msg) {
 // ---------- admin panel ----------
 
 function accountRow(r) {
-  const counts = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM archive WHERE sender = ?").get(r.username);
+  const counts = q("SELECT COUNT(*) AS n, 0 AS bytes FROM archive WHERE sender = ? AND kind = 'msg'").get(r.username);
   return {
     username: r.username, created: r.created, signupIp: r.signupIp, lastIp: r.lastIp, lastSeen: r.lastSeen,
     status: r.status, timeoutUntil: r.timeoutUntil, proxy: !!r.proxy, admin: isAdmin(r),
     profile: JSON.parse(r.profile || "{}"), sent: counts.n, bytes: counts.bytes, online: isOnline(r.username),
     origin: r.origin, note: r.note || "",
+    used: usageOf(r.username), quotaGB: r.quotaGB, quota: quotaBytes(r) === Infinity ? 0 : quotaBytes(r),
   };
 }
 
@@ -439,7 +480,9 @@ async function admin(me, msg) {
           messagesToday: q("SELECT COUNT(*) AS n FROM archive WHERE kind = 'msg' AND ts > ?").get(day).n,
           waiting: q("SELECT COUNT(*) AS n FROM queue").get().n,
           used, cap: CAP_BYTES,
-          backup: lastSync, tunnel: tunnelUrl,
+          backup: lastSync, tunnel: tunnelUrl, dbBackup: lastBackup,
+          openReports: q("SELECT COUNT(*) AS n FROM reports WHERE status = 'open'").get().n,
+          pending: q("SELECT COUNT(*) AS n FROM accounts WHERE status = 'pending'").get().n,
         },
         bannedIps: q("SELECT * FROM banned_ips ORDER BY ts DESC").all(),
         events: q("SELECT ts, text FROM events ORDER BY n DESC LIMIT 100").all(),
@@ -511,6 +554,68 @@ async function admin(me, msg) {
       const rows = q("SELECT sender, escrow FROM archive WHERE fid = ? AND kind = 'chunk' ORDER BY ts").all(String(msg.fid || ""));
       return { pieces: rows, keys: senderKeys(rows) };
     }
+    case "approve":
+      q("UPDATE accounts SET status = 'ok' WHERE username = ? AND status = 'pending'").run(target);
+      dirty();
+      event(`@${me} approved @${target}`);
+      return { ok: true };
+    case "quota": {
+      const gb = msg.gb === null || msg.gb === "" ? null : Math.max(0, Number(msg.gb) || 0);
+      q("UPDATE accounts SET quotaGB = ? WHERE username = ?").run(gb, target);
+      event(`@${me} set @${target}'s storage limit to ${gb === null ? "the default" : gb ? gb + " GB" : "unlimited"}`);
+      return { ok: true };
+    }
+    case "settings":
+      return {
+        signupMode: signupMode(), defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
+        invites: q("SELECT * FROM invites ORDER BY created DESC").all(), backup: lastBackup, backupDir: BACKUP_DIR,
+      };
+    case "set-settings": {
+      if (["open", "approval", "invite", "closed"].includes(msg.signupMode)) {
+        kvSet("signupMode", msg.signupMode);
+        event(`@${me} set sign-ups to "${msg.signupMode}"`);
+        syncSoon();
+      }
+      if (msg.defaultQuotaGB !== undefined) kvSet("defaultQuotaGB", Math.max(0, Number(msg.defaultQuotaGB) || 0));
+      if (Array.isArray(msg.watchWords)) kvSet("watchWords", msg.watchWords.map((w) => String(w).trim().toLowerCase()).filter(Boolean).slice(0, 200));
+      return { ok: true };
+    }
+    case "invite": {
+      const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      const code = Array.from(nodeCrypto.randomBytes(8), (b) => alphabet[b % alphabet.length]).join("");
+      q("INSERT INTO invites (code, uses, created, note) VALUES (?, ?, ?, ?)").run(code, Math.max(1, Math.min(1000, Number(msg.uses) || 1)), Date.now(), String(msg.note || "").slice(0, 100));
+      return { code };
+    }
+    case "delete-invite":
+      q("DELETE FROM invites WHERE code = ?").run(String(msg.code || ""));
+      return { ok: true };
+    case "backup":
+      return { backup: backupNow() };
+    case "reports":
+      return { reports: q("SELECT * FROM reports ORDER BY (status = 'open') DESC, n DESC LIMIT 300").all() };
+    case "resolve-report":
+      q("UPDATE reports SET status = ? WHERE n = ?").run(msg.open ? "open" : "done", Number(msg.n));
+      return { ok: true };
+    case "announce": {
+      const text = String(msg.text || "").trim().slice(0, 2000);
+      if (!text) throw new Error("Write something first.");
+      const r = q("INSERT INTO announcements (ts, text, by) VALUES (?, ?, ?)").run(Date.now(), text, me);
+      const item = { n: Number(r.lastInsertRowid), ts: Date.now(), text };
+      for (const set of sockets.values()) for (const ws of set) ws.send(JSON.stringify({ type: "announce", ...item }));
+      event(`@${me} sent an announcement`);
+      return { ok: true };
+    }
+    case "announcements":
+      return { announcements: q("SELECT * FROM announcements ORDER BY n DESC LIMIT 50").all() };
+    case "delete-announcement":
+      q("DELETE FROM announcements WHERE n = ?").run(Number(msg.n));
+      return { ok: true };
+    // Recent messages from everyone, for word alerts (checked in the admin's browser).
+    case "recent": {
+      const after = Number(msg.after) || Date.now() - 7 * 86400e3;
+      const rows = q("SELECT id, sender, recipient, ts, escrow FROM archive WHERE kind = 'msg' AND ts > ? ORDER BY ts DESC LIMIT 3000").all(after);
+      return { messages: rows, keys: senderKeys(rows), watchWords: kvGet("watchWords", []) };
+    }
     case "proxy-log":
       return { log: q("SELECT username, url, ts FROM proxy_log ORDER BY n DESC LIMIT 500").all() };
     default:
@@ -526,6 +631,44 @@ function senderKeys(rows) {
     keys[r.sender] = a ? JSON.parse(a.ecdhPub) : (kvGet("oldKey:" + r.sender, null));
   }
   return keys;
+}
+
+const signupMode = () => kvGet("signupMode", "open");
+
+// ---------- backups ----------
+//
+// Every night (and on request) the whole database is copied, in a consistent
+// state, to the backup folder (a different drive), keeping the last 14.
+
+const BACKUP_DIR = config.backupDir || "";
+let lastBackup = kvGet("lastBackup", null);
+
+function backupNow() {
+  if (!BACKUP_DIR) throw new Error("No backup folder is set (backupDir in config.json).");
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
+  const file = path.join(BACKUP_DIR, `freemessenger-${stamp}.db`);
+  try { fs.unlinkSync(file); } catch {}
+  db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+  const old = fs.readdirSync(BACKUP_DIR).filter((f) => /^freemessenger-.*\.db$/.test(f)).sort();
+  for (const f of old.slice(0, Math.max(0, old.length - 14))) fs.unlinkSync(path.join(BACKUP_DIR, f));
+  lastBackup = { ts: Date.now(), file, bytes: fs.statSync(file).size };
+  kvSet("lastBackup", lastBackup);
+  event(`Backed up the database to ${file}`);
+  return lastBackup;
+}
+
+setInterval(() => {
+  const now = new Date();
+  if (!BACKUP_DIR || now.getHours() !== 3) return;
+  if (lastBackup && Date.now() - lastBackup.ts < 20 * 3600e3) return;
+  try { backupNow(); } catch (e) { event(`Backup failed: ${e.message}`); }
+}, 5 * 60e3);
+
+// ---------- announcements ----------
+
+function announcementsSince(n) {
+  return q("SELECT n, ts, text FROM announcements WHERE n > ? ORDER BY n LIMIT 20").all(Number(n) || 0);
 }
 
 // ---------- sign-in ----------
@@ -622,10 +765,19 @@ const server = http.createServer(async (req, res) => {
       if (S.RESERVED.has(name)) return reply(res, 409, { error: "That username is reserved" });
       if (!S.isPublicJwk(body.sigPub) || !S.isPublicJwk(body.ecdhPub)) return reply(res, 400, { error: "bad keys" });
       if (ipBanned(ip)) return reply(res, 403, { error: "Sign-ups from this network are blocked." });
+      const mode = signupMode();
+      if (mode === "closed" && !ADMINS.includes(name)) return reply(res, 403, { error: "Sign-ups are closed right now." });
+      let invite = null;
+      if (mode === "invite" && !ADMINS.includes(name)) {
+        invite = q("SELECT * FROM invites WHERE code = ?").get(String(body.invite || "").trim().toUpperCase());
+        if (!invite || invite.used >= invite.uses) return reply(res, 403, { error: "That invite code isn't valid.", needInvite: true });
+      }
       if (getAccount(name) || (await takenOnBackup(name))) return reply(res, 409, { error: "That username is taken" });
-      q("INSERT INTO accounts (username, sigPub, ecdhPub, created, signupIp, lastIp, lastSeen) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(name, JSON.stringify(body.sigPub), JSON.stringify(body.ecdhPub), Date.now(), ip, ip, Date.now());
-      event(`New account @${name}`);
+      const status = mode === "approval" && !ADMINS.includes(name) ? "pending" : "ok";
+      q("INSERT INTO accounts (username, sigPub, ecdhPub, created, signupIp, lastIp, lastSeen, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(name, JSON.stringify(body.sigPub), JSON.stringify(body.ecdhPub), Date.now(), ip, ip, Date.now(), status);
+      if (invite) q("UPDATE invites SET used = used + 1 WHERE code = ?").run(invite.code);
+      event(`New account @${name}${status === "pending" ? " (waiting for approval)" : ""}${invite ? ` (invite ${invite.code})` : ""}`);
       syncSoon();
       return reply(res, 200, { ok: true, username: name });
     }
@@ -643,6 +795,8 @@ const server = http.createServer(async (req, res) => {
       const [status, data] = await httpOp(m[1], msg || {}, ip);
       return reply(res, status, data);
     }
+
+    if (url.pathname === "/api/signup") return reply(res, 200, { mode: signupMode() });
 
     if (url.pathname === "/api/vapid") {
       const v = kvGet("vapid", null);
@@ -838,6 +992,7 @@ async function syncNow() {
       ts: Date.now(),
       primary: tunnelUrl,
       admins: ADMINS.filter((n) => isAdmin(getAccount(n))),
+      signupMode: signupMode(),
       turn: config.turn && publicIp ? { ...config.turn, host: publicIp } : null,
       wantVapid: !kvGet("vapid", null),
       accounts: dirty.map((a) => ({
