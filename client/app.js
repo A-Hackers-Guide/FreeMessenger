@@ -171,6 +171,7 @@ async function connect() {
     onEvent: (ev) => {
       if (ev.type === "announce") showAnnouncements([ev]);
       if (ev.type === "mirror") handleMirror(ev);
+      if (ev.type === "admin-request") showAdminRequest(ev);
     },
     onFatal: (message) => toast(message || "This browser's keys don't match your account. Restore your backup file."),
   });
@@ -4131,4 +4132,33 @@ function fetchPendingBig() {
       if (m.file && m.file.big && !m.file.ready && !m.file.expired && !m.mine && m.file.size <= BigFile.INLINE_MAX) fetchBig(id, m.mid, false);
     }
   }
+}
+
+// ---------- someone wants the admin panel (shown to the owner) ----------
+
+function showAdminRequest(ev) {
+  const box = $("announce");
+  const item = document.createElement("div");
+  item.className = "announce-item admin-request";
+  const title = document.createElement("strong");
+  title.textContent = "🔐 Admin access request";
+  const text = document.createElement("p");
+  text.textContent = `@${ev.user} · ${ev.device} · IP ${ev.ip || "?"}. If you don't approve it within 10 minutes, that browser is banned.`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const yes = document.createElement("button");
+  yes.className = "primary small";
+  yes.textContent = "Approve";
+  const no = document.createElement("button");
+  no.className = "ghost small danger-text";
+  no.textContent = "Ban";
+  const done = () => { item.remove(); box.hidden = !box.children.length; };
+  yes.onclick = () => { Admin.decide(ev.rid, true); done(); };
+  no.onclick = () => { Admin.decide(ev.rid, false); done(); };
+  row.append(no, yes);
+  item.append(title, text, row);
+  box.appendChild(item);
+  box.hidden = false;
+  playTone("bell");
+  if (document.hidden) Push.showLocal("Admin access request", `@${ev.user} · ${ev.device}`, null, true);
 }

@@ -154,13 +154,26 @@ const isOnline = (name) => live(name).length > 0 || pollerOnline(name);
 function pinFor(name) {
   return (config.adminPins || {})[name] || null;
 }
-function isAdmin(a) {
+// The site owner(s) from config.json: every power, including granting admin
+// to others, approving admin browsers and banning admin sessions.
+function isSuper(a) {
   if (!a || !ADMINS.includes(a.username)) return false;
   const pin = pinFor(a.username);
   if (!pin) return false;
   const k = JSON.parse(a.sigPub);
   return k.x === pin.x && k.y === pin.y;
 }
+// Admins the owner added later: moderation only. They can't read messages
+// (the admin copies are encrypted for the owner's key) or change settings.
+const grantedAdmins = () => kvGet("grantedAdmins", {});
+function isGranted(a) {
+  const g = a && grantedAdmins()[a.username];
+  if (!g || a.status === "banned") return false;
+  const k = JSON.parse(a.sigPub);
+  return k.x === g.x && k.y === g.y;
+}
+const isAdmin = (a) => isSuper(a) || isGranted(a);
+const GRANTED_ACTIONS = new Set(["whoami", "overview", "freeze", "timeout", "ban", "unban", "approve", "note", "reports", "resolve-report", "announcements"]);
 function pinAdmins() {
   let changed = false;
   for (const name of ADMINS) {
@@ -260,6 +273,65 @@ function checkSetupCode(code) {
   return true;
 }
 
+const deviceBans = () => kvGet("deviceBans", []);
+const deviceBanned = (id) => deviceBans().some((b) => b.id === id);
+
+// ---------- admin browser approvals ----------
+//
+// Every browser that wants the admin panel must be approved from one of the
+// owner's trusted browsers. Not approved within 10 minutes, or banned: that
+// browser can't ask again until the owner unbans it.
+
+const accessRequests = new Map(); // rid -> { rid, user, device, ip, ts, status }
+const REQUEST_MS = 10 * 60e3;
+
+function sweepRequests() {
+  for (const r of accessRequests.values()) {
+    if (r.status === "pending" && Date.now() - r.ts > REQUEST_MS) banRequest(r, "not approved within 10 minutes");
+    if (Date.now() - r.ts > 3600e3) accessRequests.delete(r.rid);
+  }
+}
+setInterval(sweepRequests, 15e3);
+
+function banDevice(device, user, ip, why) {
+  if (!device || deviceBanned(device.id)) return;
+  kvSet("deviceBans", deviceBans().concat({ id: device.id, name: device.name, user, ip, ts: Date.now(), why }).slice(-200));
+  kvSet("trustedDevices", trustedDevices().filter((d) => d.id !== device.id));
+}
+
+function banRequest(r, why) {
+  r.status = "banned";
+  banDevice(r.device, r.user, r.ip, why);
+  event(`Admin browser banned (${why}): @${r.user}, ${r.device.name}, ${r.ip || "?"}`);
+}
+
+function tellOwners(payload) {
+  for (const name of ADMINS) pushEvent(name, payload);
+}
+
+// ---------- open admin sessions ----------
+
+const adminSessions = new Map(); // sid -> { sess, user, ip, kind, device, deviceId, since, last, lastAction }
+
+function registerAdmin(sess, user, how) {
+  if (!sess.sid) sess.sid = S.randomHex(8);
+  const dev = trustedDevices().find((d) => d.id === sess.trusted);
+  adminSessions.set(sess.sid, {
+    sess, user, ip: sess.ip || "", kind: sess.kind || "", since: Date.now(), last: Date.now(), lastAction: how,
+    device: dev ? dev.name : "Browser", deviceId: sess.trusted || "",
+  });
+}
+
+function endAdminSession(sid) {
+  const v = adminSessions.get(sid);
+  if (!v) return null;
+  v.sess.unlockedUntil = 0;
+  v.sess.trusted = null;
+  if (v.sess.token) httpUnlocks.delete(v.sess.token);
+  adminSessions.delete(sid);
+  return v;
+}
+
 function addDevice(dev, name) {
   if (!dev || typeof dev.id !== "string" || !/^[0-9a-f]{32}$/.test(dev.id) || !S.isPublicJwk(dev.pub)) return false;
   const list = trustedDevices().filter((d) => d.id !== dev.id);
@@ -267,6 +339,19 @@ function addDevice(dev, name) {
   kvSet("trustedDevices", list.slice(-10));
   event(`@${name} trusted a new admin browser: ${String(dev.name || "Browser").slice(0, 80)}`);
   return true;
+}
+
+// Live notices (announcements, your own messages from another device, admin
+// requests): sent straight down live connections, and kept briefly for
+// browsers that poll instead (strict networks), which get them on their next poll.
+const pollEvents = new Map(); // username -> [{ ts, ev }]
+function pushEvent(name, ev) {
+  for (const ws of live(name)) try { ws.send(JSON.stringify(ev)); } catch {}
+  if (pollerOnline(name)) {
+    const list = (pollEvents.get(name) || []).filter((x) => Date.now() - x.ts < 120e3).slice(-49);
+    list.push({ ts: Date.now(), ev });
+    pollEvents.set(name, list);
+  }
 }
 
 const flags = (a) => ({ admin: isAdmin(a), proxy: isAdmin(a) || !!a.proxy, primary: true });
@@ -338,7 +423,7 @@ function send(a, msg) {
   if (!env.ephemeral) archive(a.username, to, env, msg.escrow, meta);
   // Your other signed-in devices see what you send, as you send it.
   if (!env.ephemeral && !(meta && meta.k === "chunk") && to !== a.username) {
-    for (const ws of live(a.username)) ws.send(JSON.stringify({ type: "mirror", to, ...env }));
+    pushEvent(a.username, { type: "mirror", to, ...env });
   }
   return { id: env.id, ts: env.ts, ...deliver(to, env, hint) };
 }
@@ -607,43 +692,140 @@ async function op(a, type, msg, sess) {
   }
   if (type === "admin") {
     if (!isAdmin(a)) {
-      if (ADMINS.includes(a.username)) event(`Refused admin to @${a.username}: the key doesn't match the pinned admin key`);
+      if (ADMINS.includes(a.username) || grantedAdmins()[a.username]) event(`Refused admin to @${a.username}: the key doesn't match the one that was given admin power`);
       return { error: "Only the admin can do that." };
     }
-    // A trusted browser signs this connection's challenge: no code needed.
+    const superUser = isSuper(a);
+    // A browser this person had approved: it signs this connection's challenge.
     if (msg.action === "device-unlock") {
-      const d = trustedDevices().find((x) => x.id === msg.deviceId);
-      if (!d || !sess.nonce || !(await S.verify(d.pub, msg.sig, "fm-admin-device:" + sess.nonce))) return { error: "This browser isn't trusted.", needCode: true };
+      const d = trustedDevices().find((x) => x.id === msg.deviceId && (x.by === a.username || (!x.by && superUser)));
+      if (!d || deviceBanned(msg.deviceId) || !sess.nonce || !(await S.verify(d.pub, msg.sig, "fm-admin-device:" + sess.nonce))) return { error: "This browser isn't approved.", needApproval: true };
       sess.unlockedUntil = Date.now() + UNLOCK_MS;
       sess.trusted = d.id;
-      return { ok: true, trusted: true };
+      if (!adminSessions.has(sess.sid)) {
+        registerAdmin(sess, a.username, "opened");
+        event(`Admin panel opened: @${a.username}, ${d.name}, ${sess.ip || "?"}`);
+      }
+      return { ok: true, super: superUser };
     }
+    // A new browser asks to be approved.
+    if (msg.action === "request") {
+      const dev = msg.device;
+      if (!dev || !/^[0-9a-f]{32}$/.test(String(dev.id)) || !S.isPublicJwk(dev.pub)) return { error: "This browser can't keep a device key." };
+      if (deviceBanned(dev.id)) return { error: "This browser is banned from the admin panel.", banned: true };
+      const ownerHasBrowser = trustedDevices().some((d) => !d.by || ADMINS.includes(d.by));
+      if (!ownerHasBrowser) {
+        if (!superUser) return { error: "The owner hasn't set up the admin panel yet." };
+        makeSetupCode();
+        return { needSetup: true };
+      }
+      sweepRequests();
+      for (const r of accessRequests.values()) if (r.device.id === dev.id && r.status === "pending") return { pending: true, rid: r.rid };
+      const pendingFromUser = [...accessRequests.values()].filter((r) => r.user === a.username && r.status === "pending").length;
+      if (pendingFromUser >= 3) return { error: "Too many waiting requests. Approve or ban them first." };
+      const r = { rid: S.randomHex(8), user: a.username, device: { id: dev.id, pub: { kty: "EC", crv: "P-256", x: dev.pub.x, y: dev.pub.y }, name: String(dev.name || "Browser").slice(0, 80) }, ip: sess.ip || "", ts: Date.now(), status: "pending" };
+      accessRequests.set(r.rid, r);
+      event(`Admin access requested: @${r.user}, ${r.device.name}, ${r.ip || "?"}`);
+      tellOwners({ type: "admin-request", rid: r.rid, user: r.user, device: r.device.name, ip: r.ip });
+      return { pending: true, rid: r.rid };
+    }
+    if (msg.action === "request-status") {
+      const r = accessRequests.get(String(msg.rid || ""));
+      return r && r.user === a.username ? { status: r.status, left: Math.max(0, REQUEST_MS - (Date.now() - r.ts)) } : { status: "gone" };
+    }
+    // The very first browser, before any is approved: the setup code from the PC.
     if (msg.action === "unlock") {
-      if (Date.now() < unlockFailures.until) return checkCode("");
-      const viaSetup = checkSetupCode(msg.code);
-      const r = viaSetup ? { ok: true } : checkCode(msg.code);
-      if (r.error) { event(`Wrong admin code for @${a.username}`); return r; }
+      if (!superUser) return { error: "Only the owner can do that." };
+      if (Date.now() < unlockFailures.until) return { error: "Too many wrong codes. Try again later." };
+      if (!checkSetupCode(msg.code)) {
+        if (++unlockFailures.n >= 5) { unlockFailures.until = Date.now() + 15 * 60e3; unlockFailures.n = 0; }
+        event(`Wrong admin setup code from ${sess.ip || "?"}`);
+        return { error: "Wrong code." };
+      }
+      if (!msg.device || !addDevice(msg.device, a.username)) return { error: "This browser can't keep a device key." };
       sess.unlockedUntil = Date.now() + UNLOCK_MS;
-      // A first-time setup code always trusts this browser; a normal code does if asked.
-      if ((viaSetup || msg.trust) && msg.device && addDevice(msg.device, a.username)) sess.trusted = msg.device.id;
-      event(`Admin panel unlocked by @${a.username}${sess.trusted ? " (browser now trusted)" : ""}`);
-      return { ok: true, trusted: !!sess.trusted };
+      sess.trusted = msg.device.id;
+      registerAdmin(sess, a.username, "first setup");
+      event(`Admin panel set up on ${msg.device.name || "a browser"} from ${sess.ip || "?"}`);
+      return { ok: true, super: superUser };
     }
-    if (!sess || !(sess.unlockedUntil > Date.now())) {
-      makeSetupCode();
-      return { error: trustedDevices().length ? "Enter the code shown on your trusted browser." : "Enter the setup code from the home PC.", needCode: true, firstDevice: !trustedDevices().length };
+    if (sess && sess.sid && !adminSessions.has(sess.sid)) { sess.unlockedUntil = 0; sess.trusted = null; }
+    if (!sess || !(sess.unlockedUntil > Date.now())) return { error: "This browser needs approval.", needApproval: true };
+    const mine = adminSessions.get(sess.sid);
+    if (mine) { mine.last = Date.now(); mine.lastAction = String(msg.action || "").slice(0, 40); }
+    if (msg.action === "whoami") return { super: superUser, user: a.username };
+    if (!superUser && !GRANTED_ACTIONS.has(msg.action)) return { error: "Only the owner can do that." };
+
+    // ---------- owner only: approvals, sessions, bans, admins ----------
+    if (msg.action === "security") {
+      sweepRequests();
+      const now = Date.now();
+      for (const [sid, v] of adminSessions) if (!(v.sess.unlockedUntil > now)) adminSessions.delete(sid);
+      const granted = grantedAdmins();
+      return {
+        requests: [...accessRequests.values()].filter((r) => r.status === "pending").map((r) => ({ rid: r.rid, user: r.user, device: r.device.name, ip: r.ip, ts: r.ts, left: Math.max(0, REQUEST_MS - (now - r.ts)) })),
+        sessions: [...adminSessions.entries()].map(([sid, v]) => ({ id: sid, user: v.user, device: v.device, ip: v.ip, kind: v.kind, since: v.since, last: v.last, lastAction: v.lastAction, you: sid === sess.sid })),
+        browsers: trustedDevices().map((d) => ({ id: d.id, name: d.name, user: d.by || ADMINS[0], added: d.added, you: d.id === sess.trusted })),
+        bans: deviceBans().slice().reverse(),
+        admins: ADMINS.map((u) => ({ user: u, owner: true })).concat(Object.entries(granted).map(([u, g]) => ({ user: u, by: g.by, ts: g.ts }))),
+        log: q("SELECT ts, text FROM events WHERE text LIKE 'Admin %' OR text LIKE '%admin browser%' OR text LIKE '%admin power%' OR text LIKE 'Wrong admin%' OR text LIKE 'Refused admin%' ORDER BY n DESC LIMIT 50").all(),
+      };
     }
-    if (msg.action === "current-code") {
-      if (!sess.trusted || !trustedDevices().some((d) => d.id === sess.trusted)) return { error: "Only a trusted browser can show codes." };
-      if (!config.adminTotp) return { error: "The admin code isn't set up on the home server." };
-      const now = Date.now() / 1000;
-      return { code: totpAt(config.adminTotp, Math.floor(now / TOTP_STEP)), left: Math.ceil(TOTP_STEP - (now % TOTP_STEP)) };
+    if (msg.action === "approve-browser") {
+      const r = accessRequests.get(String(msg.rid || ""));
+      if (!r || r.status !== "pending") return { error: "That request is gone." };
+      r.status = "approved";
+      addDevice(r.device, r.user);
+      event(`Admin browser approved: @${r.user}, ${r.device.name}, ${r.ip || "?"}`);
+      return { ok: true };
     }
-    if (msg.action === "devices") return { devices: trustedDevices().map((d) => ({ id: d.id, name: d.name, added: d.added, current: d.id === sess.trusted })) };
+    if (msg.action === "ban-request") {
+      const r = accessRequests.get(String(msg.rid || ""));
+      if (!r || r.status !== "pending") return { error: "That request is gone." };
+      banRequest(r, "banned by the owner");
+      return { ok: true };
+    }
+    if (msg.action === "ban-session") {
+      const v = adminSessions.get(String(msg.id || ""));
+      if (!v) return { error: "That session already ended." };
+      if (msg.id === sess.sid) return { error: "That's you. Use another browser to ban this one." };
+      endAdminSession(msg.id);
+      const dev = trustedDevices().find((d) => d.id === v.deviceId) || { id: v.deviceId, name: v.device };
+      if (v.deviceId) banDevice(dev, v.user, v.ip, "session banned by the owner");
+      for (const ws of live(v.user)) if (ws._fmSess === v.sess) try { ws.close(4006, "admin session banned"); } catch {}
+      event(`Admin session banned: @${v.user}, ${v.device}, ${v.ip || "?"}`);
+      return { ok: true };
+    }
+    if (msg.action === "unban-browser") {
+      kvSet("deviceBans", deviceBans().filter((b) => b.id !== msg.id));
+      event("An admin browser was unbanned");
+      return { ok: true };
+    }
     if (msg.action === "untrust") {
+      if (msg.id === sess.trusted) return { error: "That's this browser. Remove it from another one." };
       kvSet("trustedDevices", trustedDevices().filter((d) => d.id !== msg.id));
-      if (sess.trusted === msg.id) sess.trusted = null;
-      event(`@${a.username} stopped trusting an admin browser`);
+      for (const [sid, v] of adminSessions) if (v.deviceId === msg.id) endAdminSession(sid);
+      event("An approved admin browser was removed");
+      return { ok: true };
+    }
+    if (msg.action === "grant-admin") {
+      const target = getAccount(String(msg.user || "").toLowerCase().replace(/^@/, ""));
+      if (!target || target.status === "banned") return { error: "No such account." };
+      if (ADMINS.includes(target.username)) return { error: "That's already the owner." };
+      const k = JSON.parse(target.sigPub);
+      kvSet("grantedAdmins", Object.assign(grantedAdmins(), { [target.username]: { x: k.x, y: k.y, by: a.username, ts: Date.now() } }));
+      event(`@${a.username} gave admin power to @${target.username}`);
+      return { ok: true };
+    }
+    if (msg.action === "revoke-admin") {
+      const u = String(msg.user || "");
+      const g = grantedAdmins();
+      if (!g[u]) return { error: "They aren't an admin." };
+      delete g[u];
+      kvSet("grantedAdmins", g);
+      kvSet("trustedDevices", trustedDevices().filter((d) => d.by !== u));
+      for (const [sid, v] of adminSessions) if (v.user === u) endAdminSession(sid);
+      event(`@${a.username} took admin power away from @${u}`);
       return { ok: true };
     }
     try { return await admin(a.username, msg); } catch (e) { return { error: e.message }; }
@@ -726,7 +908,7 @@ async function admin(me, msg) {
   const target = typeof msg.user === "string" ? msg.user.toLowerCase() : "";
   const acct = target && getAccount(target);
   if (target && !acct) throw new Error("No such account.");
-  if (acct && ADMINS.includes(target) && ["freeze", "timeout", "remove", "ban"].includes(msg.action)) throw new Error("Admins can't be moderated here.");
+  if (acct && (ADMINS.includes(target) || grantedAdmins()[target]) && ["freeze", "timeout", "remove", "ban"].includes(msg.action)) throw new Error("Admins can't be moderated here. Take their admin power away first.");
   const dirty = () => markCf(target);
 
   switch (msg.action) {
@@ -872,7 +1054,7 @@ async function admin(me, msg) {
       if (!text) throw new Error("Write something first.");
       const r = q("INSERT INTO announcements (ts, text, by) VALUES (?, ?, ?)").run(Date.now(), text, me);
       const item = { n: Number(r.lastInsertRowid), ts: Date.now(), text };
-      for (const set of sockets.values()) for (const ws of set) ws.send(JSON.stringify({ type: "announce", ...item }));
+      for (const name of new Set([...sockets.keys(), ...lastPoll.keys()])) pushEvent(name, { type: "announce", ...item });
       event(`@${me} sent an announcement`);
       return { ok: true };
     }
@@ -990,12 +1172,17 @@ async function httpOp(name, msg, ip) {
       .all(name, after.ts, after.ts, after.id);
     const eph = (ephemeral.get(name) || []).filter((m) => now - m.ts < 60e3);
     ephemeral.delete(name);
-    return [200, { messages: [...rows.map((r) => JSON.parse(r.env)), ...eph] }];
+    const events = (pollEvents.get(name) || []).filter((x) => now - x.ts < 120e3).map((x) => x.ev);
+    pollEvents.delete(name);
+    return [200, { messages: [...rows.map((r) => JSON.parse(r.env)), ...eph], events }];
   }
   if (msg.op === "ack") { ack(name, msg.items); return [200, { ok: true }]; }
-  const sess = Object.assign({ unlockedUntil: 0, trusted: null }, httpUnlocks.get(msg.token), { nonce: msg.token });
+  const stored = httpUnlocks.get(msg.token);
+  const reg = stored && stored.sid && adminSessions.get(stored.sid);
+  // The same session object every time, so a ban takes effect at once.
+  const sess = reg ? reg.sess : Object.assign({ unlockedUntil: 0, trusted: null }, stored, { nonce: msg.token, token: msg.token, ip, kind: "web requests" });
   const r = await op(user, msg.op, msg, sess);
-  if (sess.unlockedUntil) httpUnlocks.set(msg.token, { unlockedUntil: sess.unlockedUntil, trusted: sess.trusted });
+  if (sess.unlockedUntil > Date.now() && sess.sid) httpUnlocks.set(msg.token, { unlockedUntil: sess.unlockedUntil, trusted: sess.trusted, sid: sess.sid });
   return r ? [200, r] : [400, { error: "unknown op" }];
 }
 
@@ -1076,7 +1263,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/admin-key") {
       const a = ADMINS[0] && (await ensureAccount(ADMINS[0]));
-      return reply(res, 200, a && isAdmin(a) ? { ecdhPub: JSON.parse(a.ecdhPub) } : {});
+      return reply(res, 200, a && isSuper(a) ? { ecdhPub: JSON.parse(a.ecdhPub) } : {});
     }
     if (url.pathname === "/api/ice") {
       const name = url.searchParams.get("u") || "guest";
@@ -1163,7 +1350,8 @@ server.on("upgrade", async (req, socket, head) => {
 function onSocket(ws, name, ip) {
   const challenge = crypto.randomUUID();
   let authed = false;
-  const sess = { unlockedUntil: 0, trusted: null, nonce: challenge };
+  const sess = { unlockedUntil: 0, trusted: null, nonce: challenge, ip, kind: "live connection" };
+  ws._fmSess = sess;
   ws.send(JSON.stringify({ type: "challenge", challenge }));
   ws.on("message", async (data) => {
     const raw = data.toString();
@@ -1196,6 +1384,7 @@ function onSocket(ws, name, ip) {
     if (r) ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
   });
   ws.on("close", () => {
+    if (sess.sid) adminSessions.delete(sess.sid);
     if (authed) q("UPDATE accounts SET lastSeen = ? WHERE username = ?").run(Date.now(), name);
     const set = sockets.get(name);
     if (set) { set.delete(ws); if (!set.size) sockets.delete(name); }
