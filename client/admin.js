@@ -6,10 +6,12 @@
 import * as E2E from "./crypto.js";
 import * as F from "./files.js";
 import { clear } from "./compat.js";
+import * as Device from "./device.js";
 
 const $ = (id) => document.getElementById(id);
 let ctx = null;          // { conn(), me(), toast() }
 let tab = "accounts";
+let trustedHere = false;
 let data = null;         // last overview
 const plain = new Map(); // archive id -> decrypted payload (or null)
 
@@ -34,21 +36,43 @@ async function call(action, extra) {
   return r;
 }
 
-// The second step: a 6-digit code from the admin's authenticator app.
-function askCode(body, then) {
+// A trusted browser unlocks by itself; anywhere else asks for the code
+// shown on a trusted browser (or the first-time setup code from the PC).
+async function tryDevice() {
+  if (!(await Device.known())) return false;
+  try {
+    const conn = ctx.conn();
+    const d = await Device.get();
+    await call("device-unlock", { deviceId: d.id, sig: await Device.sign("fm-admin-device:" + conn.nonce) });
+    trustedHere = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function askCode(body, first, then) {
   clear(body);
-  const input = el("input", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", class: "admin-filter code-input" });
+  const input = el("input", { autocomplete: "one-time-code", maxlength: "10", placeholder: first ? "ABCD2345" : "123456", class: "admin-filter code-input", autocapitalize: "characters", spellcheck: "false" });
   const err = el("p", { class: "error", role: "alert" });
+  const trust = el("input", { type: "checkbox" });
   const form = el("form", { class: "admin-code" },
-    el("h3", {}, "Enter your admin code"),
-    el("p", { class: "hint" }, "Open your authenticator app and type the 6-digit code for FreeMessenger admin."),
-    input, err,
+    el("h3", {}, first ? "Trust this browser" : "Enter your admin code"),
+    el("p", { class: "hint" }, first
+      ? "Type the setup code from E:\\FreeMessenger\\data\\device-setup-code.txt on the home PC. This browser will then open the admin panel without a code."
+      : "Open the admin panel on your trusted browser (your Mac), tap \u201cCode for another device\u201d, and type the 6-digit code here."),
+    input,
+    first ? null : el("label", { class: "trust-row" }, trust, " Trust this browser too (no code next time)"),
+    err,
     el("button", { type: "submit", class: "primary" }, "Unlock"));
   form.onsubmit = async (e) => {
     e.preventDefault();
     err.textContent = "";
     try {
-      await call("unlock", { code: input.value.trim() });
+      const extra = { code: input.value.trim(), trust: first || trust.checked };
+      if (extra.trust) extra.device = await Device.publicInfo();
+      const r = await call("unlock", extra);
+      trustedHere = !!r.trusted;
       then();
     } catch (x) {
       err.textContent = x.message;
@@ -87,7 +111,8 @@ async function show(name, reload) {
     try {
       data = await call("overview");
     } catch (e) {
-      if (e.needCode) return askCode(body, () => show(name, true));
+      if (e.needCode && (await tryDevice())) return show(name, true);
+      if (e.needCode) return askCode(body, /setup code/.test(e.message), () => show(name, true));
       clear(body);
       body.appendChild(el("p", { class: "error" }, e.message));
       return;
@@ -97,6 +122,7 @@ async function show(name, reload) {
   if (name === "accounts") renderAccounts(body);
   else if (name === "messages") renderMessages(body);
   else if (name === "viewer") renderViewer(body);
+  else if (name === "devices") renderDevices(body);
   else renderActivity(body);
 }
 
@@ -395,3 +421,53 @@ function renderActivity(body) {
 }
 
 const stat = (label, value) => el("div", { class: "stat" }, el("strong", {}, String(value)), el("small", {}, label));
+
+// ---------- trusted browsers, and codes for other devices ----------
+
+let codeTimer = null;
+
+async function renderDevices(body) {
+  clearInterval(codeTimer);
+  if (trustedHere) {
+    const code = el("strong", { class: "big-code" }, "······");
+    const left = el("small", {}, "");
+    const tick = async () => {
+      if ($("admin").hidden || tab !== "devices") return clearInterval(codeTimer);
+      try {
+        const r = await call("current-code");
+        code.textContent = r.code.slice(0, 3) + " " + r.code.slice(3);
+        left.textContent = `Changes in ${r.left} seconds`;
+      } catch (e) {
+        code.textContent = "—";
+        left.textContent = e.message;
+      }
+    };
+    body.appendChild(el("div", { class: "stat code-card" }, el("small", {}, "Code for another device"), code, left));
+    tick();
+    codeTimer = setInterval(tick, 5000);
+  } else {
+    body.appendChild(el("p", { class: "hint" }, "This browser isn't trusted, so it can't show codes. Codes appear on your trusted browser."));
+  }
+  body.appendChild(el("h3", {}, "Trusted browsers"));
+  const list = el("div", {}, el("p", { class: "hint" }, "Loading…"));
+  body.appendChild(list);
+  try {
+    const r = await call("devices");
+    clear(list);
+    if (!r.devices.length) list.appendChild(el("p", { class: "hint" }, "None yet."));
+    for (const d of r.devices) {
+      list.appendChild(el("div", { class: "admin-msg" },
+        el("strong", {}, d.name + (d.current ? " (this browser)" : "")),
+        el("small", {}, "Trusted " + when(d.added)),
+        el("button", { class: "link danger-text", onclick: async () => {
+          if (!confirm(`Stop trusting ${d.name}${d.current ? " (this browser)" : ""}? It will need a code next time.`)) return;
+          await call("untrust", { id: d.id }).catch((e) => ctx.toast(e.message));
+          if (d.current) trustedHere = false;
+          show("devices");
+        } }, "Stop trusting")));
+    }
+  } catch (e) {
+    clear(list);
+    list.appendChild(el("p", { class: "error" }, e.message));
+  }
+}

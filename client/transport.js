@@ -29,6 +29,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
   const flagsFrom = (m) => ({ admin: !!m.admin, proxy: !!m.proxy, primary: !!m.primary });
   let mode = null;
   let stopped = false;
+  let nonce = null; // this sign-in's challenge (WebSocket) or session token (HTTP)
   let ready = false;
   const setReady = (on) => {
     if (on !== ready) { ready = on; onState(on, mode); }
@@ -56,6 +57,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "challenge") {
+        nonce = msg.challenge;
         ws.send(JSON.stringify({ type: "auth", signature: await sign(msg.challenge) }));
       } else if (msg.type === "ready") {
         signedIn = true;
@@ -138,6 +140,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
     const { challenge } = await call("challenge", {});
     const r = await call("auth", { challenge, signature: await sign(challenge) });
     token = r.token;
+    nonce = r.token;
     if (onFlags) onFlags(flagsFrom(r));
   }
 
@@ -241,6 +244,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
     ack,
     boost,
     get ready() { return ready; },
+    get nonce() { return nonce; },
     get mode() { return mode; },
   };
 }
