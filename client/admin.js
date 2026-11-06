@@ -616,14 +616,17 @@ async function renderReports(body) {
 
 async function renderAlerts(body) {
   const box = el("div", {}, el("p", { class: "hint" }, "Decrypting the last 7 days of messages and checking them…"));
-  body.append(el("p", { class: "hint" }, "Messages from the last 7 days that contain one of your watch words. Change the words on the Settings tab."), box);
+  body.append(el("p", { class: "hint" }, "Messages from the last 7 days that contain one of your watch words (whole words only). Change the words on the Settings tab."), box);
   try {
     const r = await call("recent");
     const words = r.watchWords || [];
     clear(box);
     if (!words.length) return box.appendChild(el("p", { class: "hint" }, "You haven't set any watch words yet (Settings tab)."));
     await decryptRows(r.messages, r.keys);
-    const re = new RegExp("(" + words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "i");
+    // Whole words only: a watch word never matches inside a longer word.
+    const alt = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    let re;
+    try { re = new RegExp("(?<![A-Za-z0-9])(" + alt + ")(?![A-Za-z0-9])", "i"); } catch { re = new RegExp("\\b(" + alt + ")\\b", "i"); }
     const seen = new Set();
     let hits = 0;
     for (const row of r.messages) {
@@ -635,7 +638,7 @@ async function renderAlerts(body) {
       seen.add(key);
       hits++;
       const line = el("div", {});
-      for (const part of text.split(re)) line.appendChild(re.test(part) && words.some((w) => w === part.toLowerCase()) ? el("mark", { class: "hl" }, part) : document.createTextNode(part));
+      for (const part of text.split(re)) line.appendChild(words.indexOf(part.toLowerCase()) !== -1 ? el("mark", { class: "hl" }, part) : document.createTextNode(part));
       box.appendChild(el("div", { class: "admin-msg" },
         el("small", {}, `@${row.sender} → ${p.gid ? "a group" : "@" + row.recipient} · ${when(row.ts)}`), line,
         el("button", { class: "link", onclick: () => { msgState.user = row.sender; msgState.rows = []; show("messages"); } }, "Open their messages")));
