@@ -60,7 +60,21 @@ async function tryDevice() {
 
 let waitTimer = null;
 
-async function askApproval(body, then) {
+// Admin panel on a browser that isn't approved yet: nothing is sent until you
+// press "Ask for approval".
+function askApproval(body, then) {
+  clear(body);
+  clearInterval(waitTimer);
+  const btn = el("button", { class: "primary" }, "🔐 Ask for approval");
+  btn.onclick = () => { btn.disabled = true; requestApproval(body, then); };
+  body.appendChild(el("div", { class: "admin-code" },
+    el("h3", {}, "This browser isn't approved yet"),
+    el("p", { class: "hint" }, "Ask, then approve it from one of your approved browsers: an Approve / Ban prompt appears there (also in the Security tab)."),
+    el("p", { class: "hint" }, "If it isn't approved within 10 minutes of asking, this browser is banned from the admin panel."),
+    btn));
+}
+
+async function requestApproval(body, then) {
   clear(body);
   clearInterval(waitTimer);
   let info;
