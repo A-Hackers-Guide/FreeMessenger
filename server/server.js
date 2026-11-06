@@ -95,6 +95,8 @@ const markCf = (name) => q("UPDATE accounts SET cfDirty = ? WHERE username = ?")
 const event = (text) => { q("INSERT INTO events (ts, text) VALUES (?, ?)").run(Date.now(), text); log(text); };
 
 const getAccount = (name) => q("SELECT * FROM accounts WHERE username = ?").get(name);
+// Old usernames point at the new one after someone changes theirs.
+const resolveName = (name) => (getAccount(name) ? name : kvGet("alias:" + name, null) || name);
 const pub = (a) => ({ username: a.username, sigPub: JSON.parse(a.sigPub), ecdhPub: JSON.parse(a.ecdhPub), profile: JSON.parse(a.profile || "{}") });
 
 function usedBytes() {
@@ -292,7 +294,7 @@ function deliver(to, env, hint) {
 }
 
 function send(a, msg) {
-  const to = String(msg.to || "").toLowerCase();
+  const to = resolveName(String(msg.to || "").toLowerCase());
   if (!S.USERNAME.test(to)) return { error: "bad recipient" };
   const target = getAccount(to);
   if (!target || target.status === "banned") return { error: "No such user" };
@@ -316,7 +318,12 @@ function send(a, msg) {
     return { scheduled: true, sid: id };
   }
   const env = { id: crypto.randomUUID(), from: a.username, ts: Date.now(), ephemeral: !!msg.ephemeral, body: msg.body };
-  if (!env.ephemeral) archive(a.username, to, env, msg.escrow, S.cleanMeta(msg.meta));
+  const meta = S.cleanMeta(msg.meta);
+  if (!env.ephemeral) archive(a.username, to, env, msg.escrow, meta);
+  // Your other signed-in devices see what you send, as you send it.
+  if (!env.ephemeral && !(meta && meta.k === "chunk") && to !== a.username) {
+    for (const ws of live(a.username)) ws.send(JSON.stringify({ type: "mirror", to, ...env }));
+  }
   return { id: env.id, ts: env.ts, ...deliver(to, env, hint) };
 }
 
@@ -404,6 +411,7 @@ async function op(a, type, msg, sess) {
   }
   if (type === "history") return history(a.username, msg);
   if (type === "announcements") return { announcements: announcementsSince(msg.after) };
+  if (type === "rename") return renameAccount(a, String(msg.name || "").toLowerCase());
   if (type === "unschedule") {
     const ids = (Array.isArray(msg.sids) ? msg.sids : []).slice(0, 100);
     let n = 0;
@@ -485,10 +493,60 @@ async function op(a, type, msg, sess) {
 
 // Your own messages, both ways, for a new browser. Newest first, in pages.
 function history(name, msg) {
+  // "after": everything newer, oldest first (keeps your devices in sync).
+  if (msg.after !== undefined) {
+    const after = Number(msg.after) || 0;
+    const rows = q(`SELECT id, sender, recipient, ts, body FROM archive
+      WHERE (sender = ? OR recipient = ?) AND ts > ? AND kind != 'chunk' ORDER BY ts LIMIT 500`).all(name, name, after);
+    return { messages: rows.map((r) => ({ id: r.id, from: r.sender, to: r.recipient, ts: r.ts, body: r.body })), done: rows.length < 500 };
+  }
   const before = Number(msg.before) || Date.now() + 1;
   const rows = q(`SELECT id, sender, recipient, ts, body FROM archive
     WHERE (sender = ? OR recipient = ?) AND ts < ? AND kind != 'chunk' ORDER BY ts DESC LIMIT 300`).all(name, name, before);
   return { messages: rows.map((r) => ({ id: r.id, from: r.sender, to: r.recipient, ts: r.ts, body: r.body })), done: rows.length < 300 };
+}
+
+// ---------- changing your username ----------
+//
+// Everything moves to the new name; the old one keeps pointing to it, so
+// people who still have the old name can reach you. Once a month at most.
+
+async function renameAccount(a, name) {
+  const old = a.username;
+  if (ADMINS.includes(old)) return { error: "The admin account's username can't be changed." };
+  if (!S.USERNAME.test(name)) return { error: "Usernames are 3-20 characters: a-z, 0-9 and _" };
+  if (name === old) return { error: "That's already your username." };
+  if (S.RESERVED.has(name) || ADMINS.includes(name)) return { error: "That username is reserved" };
+  if (getAccount(name) || kvGet("alias:" + name, null) || (await takenOnBackup(name))) return { error: "That username is taken" };
+  const last = kvGet("renamed:" + old, 0);
+  if (Date.now() - last < 30 * 86400e3) return { error: "You can change your username once a month." };
+  db.exec("BEGIN");
+  try {
+    q("UPDATE accounts SET username = ? WHERE username = ?").run(name, old);
+    q("UPDATE archive SET sender = ? WHERE sender = ?").run(name, old);
+    q("UPDATE archive SET recipient = ? WHERE recipient = ?").run(name, old);
+    q("UPDATE queue SET recipient = ? WHERE recipient = ?").run(name, old);
+    q("UPDATE scheduled SET sender = ? WHERE sender = ?").run(name, old);
+    q("UPDATE scheduled SET recipient = ? WHERE recipient = ?").run(name, old);
+    q("UPDATE sessions SET username = ? WHERE username = ?").run(name, old);
+    q("UPDATE push_subs SET username = ? WHERE username = ?").run(name, old);
+    q("UPDATE OR REPLACE usage SET username = ? WHERE username = ?").run(name, old);
+    for (const [k, v] of q("SELECT k, v FROM kv WHERE k LIKE 'alias:%'").all().map((r) => [r.k, JSON.parse(r.v)])) {
+      if (v === old) kvSet(k, name);
+    }
+    kvSet("alias:" + old, name);
+    kvSet("renamed:" + name, Date.now());
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  kvSet("cfRemoved", [...new Set([...kvGet("cfRemoved", []), old])]);
+  markCf(name);
+  syncSoon();
+  event(`@${old} changed their username to @${name}`);
+  setTimeout(() => kick(old, 4005, "renamed"), 500);
+  return { ok: true, username: name };
 }
 
 // ---------- admin panel ----------
@@ -610,7 +668,8 @@ async function admin(me, msg) {
     }
     case "settings":
       return {
-        signupMode: signupMode(), defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
+        signupMode: signupMode(),
+      oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)), defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
         invites: q("SELECT * FROM invites ORDER BY created DESC").all(), backup: lastBackup, backupDir: BACKUP_DIR,
       };
     case "set-settings": {
@@ -815,7 +874,7 @@ const server = http.createServer(async (req, res) => {
         invite = q("SELECT * FROM invites WHERE code = ?").get(String(body.invite || "").trim().toUpperCase());
         if (!invite || invite.used >= invite.uses) return reply(res, 403, { error: "That invite code isn't valid.", needInvite: true });
       }
-      if (getAccount(name) || (await takenOnBackup(name))) return reply(res, 409, { error: "That username is taken" });
+      if (getAccount(name) || kvGet("alias:" + name, null) || (await takenOnBackup(name))) return reply(res, 409, { error: "That username is taken" });
       const status = mode === "approval" && !ADMINS.includes(name) ? "pending" : "ok";
       q("INSERT INTO accounts (username, sigPub, ecdhPub, created, signupIp, lastIp, lastSeen, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run(name, JSON.stringify(body.sigPub), JSON.stringify(body.ecdhPub), Date.now(), ip, ip, Date.now(), status);
@@ -827,7 +886,7 @@ const server = http.createServer(async (req, res) => {
 
     let m = url.pathname.match(/^\/api\/user\/([a-z0-9_]{3,20})$/);
     if (m && req.method === "GET") {
-      const a = await ensureAccount(m[1]);
+      const a = (await ensureAccount(m[1])) || getAccount(resolveName(m[1]));
       return a && a.status !== "banned" ? reply(res, 200, pub(a)) : reply(res, 404, { error: "No such user" });
     }
 
@@ -894,7 +953,7 @@ async function takenOnBackup(name) {
 // public keys now, so its owner can sign in right away.
 async function ensureAccount(name) {
   const a = getAccount(name);
-  if (a || !BACKUP || kvGet("cfRemoved", []).includes(name)) return a;
+  if (a || !BACKUP || kvGet("cfRemoved", []).includes(name) || kvGet("alias:" + name, null)) return a;
   try {
     const r = await fetch(`${BACKUP}/api/user/${name}`, { signal: AbortSignal.timeout(5000) });
     if (r.status !== 200) return null;
@@ -1036,6 +1095,7 @@ async function syncNow() {
       primary: tunnelUrl,
       admins: ADMINS.filter((n) => isAdmin(getAccount(n))),
       signupMode: signupMode(),
+      oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)),
       turn: config.turn && publicIp ? { ...config.turn, host: publicIp } : null,
       wantVapid: !kvGet("vapid", null),
       accounts: dirty.map((a) => ({
@@ -1085,6 +1145,12 @@ function importFromBackup(u) {
   let a = getAccount(name);
   if (!a && acc) {
     if (kvGet("cfRemoved", []).includes(name)) return;
+    // Someone's old username: never hand it to a new account.
+    if (kvGet("alias:" + name, null)) {
+      kvSet("cfRemoved", [...new Set([...kvGet("cfRemoved", []), name])]);
+      event(`Refused @${name} made on the backup relay: it's someone's old username`);
+      return;
+    }
     q("INSERT INTO accounts (username, sigPub, ecdhPub, created, signupIp, lastIp, lastSeen, origin, cfDirty) VALUES (?, ?, ?, ?, ?, ?, ?, 'cf', 0)")
       .run(name, JSON.stringify(acc.sigPub), JSON.stringify(acc.ecdhPub), acc.created || Date.now(), acc.ip || null, acc.ip || null, acc.seen || null);
     event(`New account @${name} (made on the backup relay)`);
