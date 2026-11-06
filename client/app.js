@@ -11,6 +11,9 @@ import * as Admin from "./admin.js";
 import * as Browser from "./browser.js";
 import { EMOJI, STICKERS } from "./emoji.js";
 import * as GroupCall from "./groupcall.js";
+import * as Stories from "./stories.js";
+import * as Games from "./games.js";
+import * as Extras from "./extras.js";
 
 window.FM_LOADED = true;
 
@@ -65,6 +68,8 @@ let flags = store.get("flags", { admin: false, proxy: false, primary: false });
 
 let active = null;
 const isGroup = (id) => id.slice(0, 2) === "g:";
+// Broadcast lists ("b:<id>") send each message to every person separately.
+const isBroadcast = (id) => id.slice(0, 2) === "b:";
 const saveChats = () => store.set("chats", chats);
 const savePeers = () => store.set("peers", peers);
 const saveOutbox = () => store.set("outbox", outbox.slice(-2000));
@@ -81,6 +86,7 @@ const findMessage = (id, mid) => loadChat(id).find((m) => m.mid === mid);
 function chatTitle(id) {
   if (me && id === me.username) return "⭐ Saved messages";
   const c = chats[id] || {};
+  if (isBroadcast(id)) return "📢 " + (c.name || "Broadcast");
   if (isGroup(id)) return c.name || "Group";
   const shown = c.nickname || profileOf(id).display;
   return shown ? `${shown} (@${id})` : "@" + id;
@@ -247,7 +253,7 @@ let lastBlockedToast = 0;
 
 // Messages people should hear about wake the other person's device; edits,
 // receipts, file pieces and typing don't.
-const CHAT_KINDS = ["text", "file", "poll", "sticker"];
+const CHAT_KINDS = ["text", "file", "poll", "sticker", "game"];
 const pushHint = (p) => (p.silent ? undefined : CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" || p.kind === "gcall-ring" ? "call" : undefined);
 
 // Every saved message also carries an "admin copy", encrypted for the site
@@ -276,6 +282,7 @@ async function sendPayload(to, payload, ephemeral = false, opts = {}) {
 
 // Who a chat's messages go to.
 function recipients(id) {
+  if (isBroadcast(id)) return ((chats[id] && chats[id].members) || []).filter((n) => n !== me.username);
   if (!isGroup(id)) return [id];
   const c = chats[id];
   return c && !c.left ? (c.members || []).filter((n) => n !== me.username) : [];
@@ -314,6 +321,7 @@ async function handleIncoming(env) {
   if (p.kind === "chunk") return handleChunk(env, p);
   if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
 
+  if (p.kind === "story" || p.kind === "story-view" || p.kind === "story-delete") return Stories.receive(env.from, p, env.ts);
   if (p.kind === "group") return handleGroupEvent(env.from, p, env.ts);
   // Your own message coming back: notes to yourself, or sent from another device.
   if (env.from === me.username) {
@@ -330,6 +338,7 @@ async function handleIncoming(env) {
     case "file":
     case "poll":
     case "sticker":
+    case "game":
       return receiveMessage(id, env, p);
     case "vote": {
       const m = findMessage(id, p.mid);
@@ -338,6 +347,13 @@ async function handleIncoming(env) {
       const picks = (Array.isArray(p.choices) ? p.choices : []).map(Number).filter((n) => n >= 0 && n < m.poll.options.length);
       if (picks.length) votes[env.from] = m.poll.multi ? picks.slice(0, 10) : picks.slice(0, 1); else delete votes[env.from];
       return patchMessage(id, p.mid, { poll: Object.assign({}, m.poll, { votes }) });
+    }
+    case "game-move": {
+      const m = findMessage(id, p.mid);
+      if (!m || !m.game) return;
+      const next = Games.move(m.game, env.from, p.cell);
+      if (next) patchMessage(id, p.mid, { game: next });
+      return;
     }
     case "pin": {
       const c = chats[id];
@@ -365,7 +381,7 @@ async function handleIncoming(env) {
       return patchMessage(id, p.mid, { reactions });
     }
     case "receipt":
-      return applyReceipt(id, p);
+      return applyReceipt(id, p, env.from);
     case "typing":
       return showTyping(id, env.from, !!p.rec);
     case "ttl":
@@ -397,16 +413,18 @@ function receiveMessage(id, env, p) {
       size: Number(p.size) || 0, n: Number(p.n) || 1, w: p.w, h: p.h, voice: !!p.voice, duration: p.duration,
       sticker: !!p.sticker && /^image\//.test(String(p.type || "")),
       once: !!p.once && /^image\//.test(String(p.type || "")),
+      vnote: !!p.vnote && /^video\//.test(String(p.type || "")),
     };
     files.get(m.file.fid).then((blob) => { if (blob) patchMessage(id, m.mid, { file: Object.assign({}, m.file, { ready: true }) }); });
   }
+  if (m.game) m.game.players = [env.from];
   clearTyping(id, env.from);
   const mentioned = isGroup(id) && m.text && new RegExp("(^|[^a-z0-9_])@" + me.username + "(?![a-z0-9_])", "i").test(m.text);
   const c = ensureChat(id);
   if (c.archived && !c.muted) c.archived = false;
   if (mentioned) c.mentioned = true;
   addMessage(id, m);
-  if (!isGroup(id)) queueReceipt(id, m.mid);
+  if (!isBroadcast(id)) queueReceipt(id, m.mid, env.from);
   if (m.effect) playEffect(m.effect);
   if (!p.silent) notify(id, isGroup(id) ? `${shortName(env.from)} in ${chatTitle(id)}` : chatTitle(id), previewText(m), mentioned);
 }
@@ -432,6 +450,15 @@ function cleanExtras(p) {
     const options = p.poll.options.map((o) => String(o).slice(0, 100)).filter(Boolean).slice(0, 10);
     if (options.length >= 2) out.poll = { q: p.poll.q.slice(0, 300), options, multi: !!p.poll.multi, votes: {} };
   }
+  if (p.kind === "poll" && out.poll && Number.isInteger(p.poll.quiz) && p.poll.quiz >= 0 && p.poll.quiz < out.poll.options.length) {
+    out.poll.quiz = p.poll.quiz;
+    out.poll.multi = false;
+  }
+  if (p.kind === "game") {
+    const g = Games.clean(p.game);
+    if (g) out.game = g;
+  }
+  if (p.card && typeof p.card.u === "string" && USERNAME.test(p.card.u)) out.card = { u: p.card.u };
   if (p.kind === "sticker" && p.sticker && typeof p.sticker.e === "string") {
     const known = STICKERS.find((x) => x[0] === p.sticker.e);
     if (known) out.sticker = { e: known[0], anim: known[1] };
@@ -522,6 +549,8 @@ function handleGroupEvent(from, p, ts) {
   const removed = c && !c.pending ? c.members.filter((n) => members.indexOf(n) === -1 && n !== from) : [];
   chats[id] = Object.assign(c || { last: 0, unread: 0, preview: "" }, { type: "group", name, members, pending: false, left: false });
   if (admins.length) chats[id].admins = admins;
+  if (typeof p.desc === "string") chats[id].desc = p.desc.slice(0, 500);
+  if (p.photo === null || (typeof p.photo === "string" && p.photo.length < 90000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(p.photo))) chats[id].photo = p.photo || undefined;
   const wasAdminsOnly = !!(c && c.adminsOnly);
   chats[id].adminsOnly = !!p.adminsOnly;
   if (c && !c.pending && wasAdminsOnly !== !!p.adminsOnly) systemMessage(id, p.adminsOnly ? `${shortName(from)} made this an announcement group: only admins can send messages` : `${shortName(from)} let everyone send messages again`, ts);
@@ -553,7 +582,7 @@ async function updateGroup(id, changes) {
   saveChats();
   const everyone = cleanMembers(oldMembers.concat(c.members)).filter((n) => n !== me.username);
   if (c.admins) c.admins = c.admins.filter((n) => c.members.indexOf(n) !== -1);
-  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members, admins: c.admins, adminsOnly: !!c.adminsOnly }));
+  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members, admins: c.admins, adminsOnly: !!c.adminsOnly, desc: c.desc || "", photo: c.photo || null }));
   renderHeader();
   renderChats();
 }
@@ -580,7 +609,10 @@ function ensureChat(id) {
 
 function previewText(m) {
   if (m.deleted) return "Message deleted";
-  if (m.poll) return "📊 " + m.poll.q;
+  if (m.poll) return (m.poll.quiz !== undefined ? "🧠 Quiz: " : "📊 ") + m.poll.q;
+  if (m.game) return m.game.type === "ttt" ? "❌⭕ Tic-tac-toe" : "🔴🟡 Connect Four";
+  if (m.card) return "👤 Contact: @" + m.card.u;
+  if (m.file && m.file.vnote) return "🎥 Video message";
   if (m.loc) return "📍 Location";
   if (m.file && m.file.once) return "📷 View-once photo";
   if (m.sticker) return m.sticker.e + " Sticker";
@@ -713,7 +745,8 @@ async function sendFile(id, file, extra = {}) {
   const m = newOutgoing(id, {
     text: extra.caption || "",
     file: Object.assign({ fid, name: file.name || extra.name || "file", type, size: blob.size, n, ready: true }, dims,
-      extra.voice ? { voice: true, duration: extra.duration } : {}, extra.sticker ? { sticker: true } : {}, extra.once ? { once: true } : {}),
+      extra.voice ? { voice: true, duration: extra.duration } : {}, extra.sticker ? { sticker: true } : {}, extra.once ? { once: true } : {},
+      extra.vnote ? { vnote: true, duration: extra.duration } : {}),
   });
   if (extra.fwd) m.fwd = true;
   clearDraft();
@@ -730,11 +763,12 @@ async function deliver(id, m) {
   try {
     const to = m.pendingTo || recipients(id);
     const base = { mid: m.mid, text: m.text, reply: m.reply, exp: m.exp, preview: m.preview, fwd: m.fwd || undefined,
-      silent: m.silent || undefined, effect: m.effect || undefined, loc: m.loc || undefined };
+      silent: m.silent || undefined, effect: m.effect || undefined, loc: m.loc || undefined, card: m.card || undefined };
     const payload = withGroup(id, m.file
       ? Object.assign(base, { kind: "file", fid: m.file.fid, name: m.file.name, type: m.file.type, size: m.file.size, n: m.file.n,
-          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined, once: m.file.once || undefined })
-      : m.poll ? Object.assign(base, { kind: "poll", poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi } })
+          w: m.file.w, h: m.file.h, voice: m.file.voice, duration: m.file.duration, sticker: m.file.sticker || undefined, once: m.file.once || undefined, vnote: m.file.vnote || undefined })
+      : m.poll ? Object.assign(base, { kind: "poll", poll: { q: m.poll.q, options: m.poll.options, multi: m.poll.multi, quiz: m.poll.quiz } })
+      : m.game ? Object.assign(base, { kind: "game", game: { type: m.game.type, players: [me.username] } })
       : m.sticker ? Object.assign(base, { kind: "sticker", sticker: { e: m.sticker.e } })
       : Object.assign(base, { kind: "text" }));
     const scheduled = m.at && m.at > Date.now() + 5000 && !m.file;
@@ -787,17 +821,20 @@ const statusLabel = (m) => {
 const pendingReceipts = new Map(); // chat id -> Set of mids
 let receiptTimer = null;
 
-function queueReceipt(id, mid) {
-  if (!pendingReceipts.has(id)) pendingReceipts.set(id, new Set());
-  pendingReceipts.get(id).add(mid);
+function queueReceipt(id, mid, from) {
+  const key = isGroup(id) ? id + "|" + from : id;
+  if (!pendingReceipts.has(key)) pendingReceipts.set(key, new Set());
+  pendingReceipts.get(key).add(mid);
   clearTimeout(receiptTimer);
   receiptTimer = setTimeout(flushReceipts, 800);
 }
 
 function flushReceipts() {
-  for (const [id, mids] of pendingReceipts) {
+  for (const [key, mids] of pendingReceipts) {
+    const [id, from] = key.split("|");
     const read = active === id && !document.hidden && settings.readReceipts;
-    sendControl(id, { kind: "receipt", state: read ? "read" : "delivered", mids: Array.from(mids) });
+    if (from) sendControl(from, { kind: "receipt", gid: id.slice(2), state: read ? "read" : "delivered", mids: Array.from(mids) });
+    else sendControl(id, { kind: "receipt", state: read ? "read" : "delivered", mids: Array.from(mids) });
     if (read) markReadSent(id, mids);
   }
   pendingReceipts.clear();
@@ -812,21 +849,38 @@ function markReadSent(id, mids) {
 
 // Tells the other person their messages were read, when this chat is on screen.
 function sendReadReceipts(id) {
-  if (isGroup(id) || !settings.readReceipts || document.hidden) return;
-  const mids = loadChat(id).filter((m) => !m.mine && !m.system && !m.readSent && !m.deleted).map((m) => m.mid);
-  if (!mids.length) return;
-  sendControl(id, { kind: "receipt", state: "read", mids: mids.slice(-200) });
-  markReadSent(id, new Set(mids));
+  if (!settings.readReceipts || document.hidden || isBroadcast(id) || id === me.username) return;
+  const unread = loadChat(id).filter((m) => !m.mine && !m.system && !m.readSent && !m.deleted);
+  if (!unread.length) return;
+  if (isGroup(id)) {
+    const bySender = new Map();
+    for (const m of unread) if (m.from) bySender.set(m.from, (bySender.get(m.from) || []).concat(m.mid));
+    for (const [from, mids] of bySender) sendControl(from, { kind: "receipt", gid: id.slice(2), state: "read", mids: mids.slice(-200) });
+  } else {
+    sendControl(id, { kind: "receipt", state: "read", mids: unread.map((m) => m.mid).slice(-200) });
+  }
+  markReadSent(id, new Set(unread.map((m) => m.mid)));
 }
 
-function applyReceipt(id, p) {
-  if (isGroup(id) || !Array.isArray(p.mids)) return;
+function applyReceipt(id, p, from) {
+  if (!Array.isArray(p.mids)) return;
   const status = p.state === "read" ? "read" : "delivered";
   const set = new Set(p.mids.slice(0, 500).map(String));
   const list = loadChat(id);
   let changed = false;
   for (const m of list) {
-    if (m.mine && set.has(m.mid) && STATUS_RANK[status] > (STATUS_RANK[m.status] || 0)) { m.status = status; changed = true; }
+    if (!m.mine || !set.has(m.mid)) continue;
+    if (isGroup(id)) {
+      // Who has it: "read" or "delivered", per member; the tick shows read once everyone has.
+      const by = Object.assign({}, m.readBy);
+      if (STATUS_RANK[status] > (STATUS_RANK[by[from]] || 0)) by[from] = status;
+      m.readBy = by;
+      const others = recipients(id);
+      const all = others.length && others.every((n) => by[n] === "read");
+      const next = all ? "read" : "delivered";
+      if (STATUS_RANK[next] >= (STATUS_RANK[m.status] || 0)) m.status = next;
+      changed = true;
+    } else if (STATUS_RANK[status] > (STATUS_RANK[m.status] || 0)) { m.status = status; changed = true; }
   }
   if (!changed) return;
   saveChat(id, list);
@@ -911,11 +965,14 @@ function dayLabel(ts) {
 }
 
 let showArchived = false;
+let showLocked = false;
+let chatFilter = "all";
 
 function renderChats() {
   const ul = $("contacts");
   clear(ul);
-  const all = Object.keys(chats).filter((id) => chats[id].last || id === active || chats[id].draft);
+  const all = Object.keys(chats).filter((id) => (chats[id].last || id === active || chats[id].draft) && !!chats[id].locked === showLocked)
+    .filter((id) => chatFilter === "all" || (chatFilter === "unread" ? chats[id].unread || chats[id].markedUnread : chatFilter === "groups" ? isGroup(id) || isBroadcast(id) : !isGroup(id) && !isBroadcast(id)));
   const archived = all.filter((id) => chats[id].archived);
   const ids = all.filter((id) => !!chats[id].archived === showArchived)
     .sort((a, b) => (chats[b].pinnedChat ? 1 : 0) - (chats[a].pinnedChat ? 1 : 0) || (chats[b].last || 0) - (chats[a].last || 0));
@@ -927,8 +984,17 @@ function renderChats() {
     li.onclick = (e) => { e.stopPropagation(); showArchived = !showArchived; renderChats(); };
     ul.appendChild(li);
   }
+  if (showLocked) {
+    const li = document.createElement("li");
+    li.className = "archive-row";
+    li.textContent = "🔒 Locked chats · tap to hide them again";
+    li.onclick = (e) => { e.stopPropagation(); showLocked = false; renderChats(); };
+    ul.insertBefore(li, ul.firstChild);
+  }
   for (const id of ids) ul.appendChild(chatRow(id));
-  $("contacts-empty").hidden = ids.length > 0 || showArchived;
+  $("contacts-empty").hidden = ids.length > 0 || showArchived || showLocked || chatFilter !== "all";
+  document.querySelectorAll("#chat-filters button").forEach((b) => b.classList.toggle("on", b.dataset.f === chatFilter));
+  Stories.render();
 }
 
 function chatRow(id, snippet) {
@@ -962,9 +1028,19 @@ $("contacts").onclick = $("results").onclick = (e) => {
 function fillAvatar(el, id) {
   clear(el);
   const c = chats[id] || {};
+  if (isBroadcast(id)) {
+    el.classList.add("group");
+    el.textContent = "📢";
+    return;
+  }
   if (isGroup(id)) {
     el.classList.add("group");
-    el.textContent = (chatTitle(id)[0] || "G").toUpperCase();
+    if (c.photo) {
+      const img = document.createElement("img");
+      img.src = c.photo;
+      img.alt = "";
+      el.appendChild(img);
+    } else el.textContent = (chatTitle(id)[0] || "G").toUpperCase();
     return;
   }
   const p = profileOf(id);
@@ -1079,6 +1155,18 @@ function renderFile(id, m, bubble) {
       if (f.w && f.h) { img.width = f.w; img.height = f.h; }
       img.onclick = (e) => { e.stopPropagation(); openViewer(url, f.name); };
       box.appendChild(img);
+    } else if (isVideo && f.vnote) {
+      // Round video message: plays silently on a loop; tap for sound.
+      const v = document.createElement("video");
+      v.src = url;
+      v.className = "vnote";
+      v.muted = true;
+      v.loop = true;
+      v.autoplay = true;
+      v.setAttribute("playsinline", "");
+      v.onclick = (e) => { e.stopPropagation(); v.muted = !v.muted; if (!v.muted) { v.currentTime = 0; v.play(); } };
+      box.appendChild(v);
+      box.classList.add("vnote-box");
     } else if (isVideo) {
       const v = document.createElement("video");
       v.src = url;
@@ -1170,6 +1258,8 @@ function renderMessage(id, m) {
     if (m.file && m.file.sticker) bubble.classList.add("sticker-img");
     if (m.poll) renderPoll(id, m, bubble);
     if (m.loc) bubble.appendChild(locationCard(m.loc));
+    if (m.game) bubble.appendChild(Games.render(m.game, me.username, (n) => (n === me.username ? "You" : shortName(n)), (cell) => playMove(id, m.mid, cell)));
+    if (m.card) bubble.appendChild(contactCard(m.card.u));
     if (m.file) renderFile(id, m, bubble);
     if (m.text) {
       const t = document.createElement("div");
@@ -1245,16 +1335,19 @@ function renderPoll(id, m, bubble) {
   const box = document.createElement("div");
   box.className = "poll";
   const q = document.createElement("strong");
-  q.textContent = "📊 " + p.q;
+  q.textContent = (p.quiz !== undefined ? "🧠 " : "📊 ") + p.q;
   box.appendChild(q);
   const votes = p.votes || {};
   const voters = Object.keys(votes);
   const mine = votes[me.username] || [];
+  const quiz = p.quiz !== undefined;
+  const answered = quiz && mine.length > 0;
   const counts = p.options.map((_, i) => voters.filter((v) => votes[v].indexOf(i) !== -1).length);
   const total = voters.length;
   p.options.forEach((opt, i) => {
     const b = document.createElement("button");
-    b.className = "poll-option" + (mine.indexOf(i) !== -1 ? " picked" : "");
+    b.className = "poll-option" + (mine.indexOf(i) !== -1 ? " picked" : "") + (answered && i === p.quiz ? " right" : answered && mine.indexOf(i) !== -1 ? " wrong" : "");
+    if (answered) b.disabled = true;
     const pct = total ? Math.round((counts[i] / total) * 100) : 0;
     b.style.setProperty("--pct", pct + "%");
     const label = document.createElement("span");
@@ -1267,7 +1360,7 @@ function renderPoll(id, m, bubble) {
     box.appendChild(b);
   });
   const foot = document.createElement("small");
-  foot.textContent = `${total} ${total === 1 ? "vote" : "votes"}${p.multi ? " · pick any" : ""}`;
+  foot.textContent = `${total} ${total === 1 ? "vote" : "votes"}${p.multi ? " · pick any" : ""}${quiz ? (answered ? (mine[0] === p.quiz ? " · ✅ You got it right!" : " · ❌ Not quite") : " · Quiz: one right answer") : ""}`;
   box.appendChild(foot);
   bubble.appendChild(box);
 }
@@ -1276,6 +1369,7 @@ function vote(id, m, i) {
   const c = chats[id];
   if (c && (c.left || c.blocked)) return;
   const fresh = findMessage(id, m.mid);
+  if (fresh.poll.quiz !== undefined && (fresh.poll.votes || {})[me.username]) return;
   const votes = Object.assign({}, fresh.poll.votes);
   let mine = (votes[me.username] || []).slice();
   if (fresh.poll.multi) mine = mine.indexOf(i) !== -1 ? mine.filter((x) => x !== i) : mine.concat(i);
@@ -1333,7 +1427,7 @@ function renderHeader() {
   const pinned = c.pinned && findMessage(active, c.pinned);
   $("pinned-bar").hidden = !pinned;
   if (pinned) $("pinned-text").textContent = (pinned.mine ? "You: " : shortName(pinned.from) + ": ") + (previewText(pinned) || "");
-  const status = group || active === me.username ? "" : [presenceText(active), profileOf(active).status].filter(Boolean).join(" · ");
+  const status = isBroadcast(active) ? `Sends to ${(c.members || []).length} people separately` : group ? (c.desc || "") : active === me.username ? "" : [presenceText(active), profileOf(active).status].filter(Boolean).join(" · ");
   $("peer-status").textContent = status;
   $("peer-status").hidden = !status;
   $("voice-btn").hidden = $("video-btn").hidden = !!c.blocked || (group && !!c.left);
@@ -1345,8 +1439,8 @@ function renderHeader() {
   $("send-form").classList.toggle("disabled", !!disabled);
   $("send-text").disabled = !!disabled;
   $("send-text").placeholder = c.blocked ? "You blocked this person" : group && c.left ? "You left this group" : readOnly ? "Only admins can send messages" : "Message";
-  $("voice-btn").hidden = $("video-btn").hidden ||= active === me.username;
-  $("safety-btn").hidden ||= active === me.username;
+  $("voice-btn").hidden = $("video-btn").hidden ||= active === me.username || isBroadcast(active);
+  $("safety-btn").hidden ||= active === me.username || isBroadcast(active);
   renderTyping();
 }
 
@@ -1376,7 +1470,7 @@ function openChat(id, opts = {}) {
   $("convo").hidden = false;
   renderHeader();
   applyChatLook(id);
-  if (!isGroup(id) && id !== me.username) { refreshProfile(id); refreshPresence(); }
+  if (!isGroup(id) && !isBroadcast(id) && id !== me.username) { refreshProfile(id); refreshPresence(); }
   const list = $("messages");
   clear(list);
   delete list.dataset.day;
@@ -1433,8 +1527,38 @@ function inDnd() {
 
 function notify(id, title, body, mentioned) {
   if (chats[id] && chats[id].muted && !mentioned) return;
-  if (!document.hidden || inDnd()) return;
+  if (inDnd()) return;
+  if (document.hidden || active !== id) playTone((chats[id] && chats[id].tone) || settings.tone || "pop");
+  if (!document.hidden) return;
+  if (chats[id] && chats[id].locked) return Push.showLocal("FreeMessenger", "New message", id);
   Push.showLocal((mentioned ? "@ " : "") + title, String(body).slice(0, 120), id);
+}
+
+// ---------- notification sounds (made with WebAudio, no sound files) ----------
+
+const TONES = [["pop", "Pop"], ["chime", "Chime"], ["bloop", "Bloop"], ["bell", "Bell"], ["none", "No sound"]];
+let toneCtx = null;
+let lastTone = 0;
+function playTone(name) {
+  if (name === "none" || Date.now() - lastTone < 1500) return;
+  lastTone = Date.now();
+  try {
+    toneCtx ||= new AudioCtx();
+    const c = toneCtx;
+    const notes = { pop: [[880, 0, 0.08]], chime: [[660, 0, 0.18], [990, 0.12, 0.25]], bloop: [[300, 0, 0.12], [520, 0.08, 0.14]], bell: [[1320, 0, 0.6], [1980, 0, 0.4]] }[name] || [[880, 0, 0.08]];
+    for (const [f, start, len] of notes) {
+      const o = c.createOscillator();
+      const g = c.createGain();
+      o.type = name === "bell" ? "sine" : "triangle";
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, c.currentTime + start);
+      g.gain.exponentialRampToValueAtTime(0.18, c.currentTime + start + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + start + len);
+      o.connect(g).connect(c.destination);
+      o.start(c.currentTime + start);
+      o.stop(c.currentTime + start + len + 0.05);
+    }
+  } catch {}
 }
 
 // ---------- message menu: react, reply, copy, edit, delete ----------
@@ -1484,6 +1608,8 @@ function openMessageMenu(id, mid, e) {
   });
   if (m.text) add("Copy text", () => copyText(m.text).then(() => toast("Copied.")));
   if (!m.deleted && m.status !== "scheduled") add("Forward", () => openForward(id, m));
+  if (m.mine) add("ℹ️ Message info", () => messageInfo(id, m));
+  add("⏰ Remind me", () => remindMenu(id, m));
   add(m.starred ? "Unstar" : "⭐ Star", () => { patchMessage(id, mid, { starred: !m.starred }); toast(m.starred ? "Unstarred." : "Starred. Find it in ⋯ → Starred messages."); });
   if (canSend && m.status !== "scheduled") {
     const pinnedHere = chats[id] && chats[id].pinned === mid;
@@ -1751,8 +1877,18 @@ function mainChatMenu() {
   const c = chats[id];
   const group = isGroup(id);
   const items = [];
-  if (!group && id !== me.username) items.push(["View profile", () => openProfile(id)]);
+  if (!group && !isBroadcast(id) && id !== me.username) items.push(["View profile", () => openProfile(id)]);
+  if (isBroadcast(id)) items.push(["Edit recipients", () => openGroupDialog(id, "broadcast")]);
   items.push(["Photos, files and links", () => openMedia(id)]);
+  items.push(["📅 Jump to a date", () => jumpToDate(id)]);
+  items.push([`🔔 Notification sound: ${(TONES.find((t) => t[0] === (c.tone || settings.tone || "pop")) || TONES[0])[1]}`, () => TONES.map(([k, label]) => [((c.tone || settings.tone || "pop") === k ? "✓ " : "") + label, () => { c.tone = k; saveChats(); playTone(k); }])]);
+  items.push([c.locked ? "🔓 Unlock this chat" : "🔒 Lock this chat", () => {
+    if (!c.locked && !store.get("lock", null)) return toast("Set an app lock PIN first (Settings → App lock).");
+    c.locked = !c.locked;
+    saveChats();
+    if (c.locked) { closeChat(); toast("Locked. Find it in ⋯ → Locked chats."); } else renderChats();
+  }]);
+  items.push(["Export this chat (text)", () => exportChatText(id)]);
   items.push([c.pinnedChat ? "Unpin chat" : "📌 Pin chat to the top", () => { c.pinnedChat = !c.pinnedChat; saveChats(); renderChats(); }]);
   items.push([c.archived ? "Unarchive chat" : "🗄 Archive chat", () => {
     c.archived = !c.archived;
@@ -1780,6 +1916,7 @@ function mainChatMenu() {
   if (group) {
     if (!c.left) items.push([`Members (${c.members.length})`, () => memberMenu(id)]);
     if (!c.left && isGroupAdmin(c, me.username)) {
+      items.push(["🖼 Group photo and description", () => editGroupInfo(id)]);
       items.push([c.adminsOnly ? "Let everyone send messages" : "Only admins can send messages", () => {
         updateGroup(id, { adminsOnly: !c.adminsOnly });
         systemMessage(id, c.adminsOnly ? "You made this an announcement group: only admins can send messages" : "Everyone can send messages again");
@@ -1889,9 +2026,24 @@ function handleJoinLink(hash) {
 
 let groupDialogFor = null;
 
-function openGroupDialog(id) {
+let groupDialogMode = "group";
+function openGroupDialog(id, mode) {
+  groupDialogMode = mode || (id && isBroadcast(id) ? "broadcast" : "group");
   groupDialogFor = id || null;
   const c = id && chats[id];
+  if (groupDialogMode === "broadcast") {
+    $("group-dialog-title").textContent = c ? `Recipients of "${c.name}"` : "New broadcast list";
+    $("group-name").hidden = $("group-name-label").hidden = !!c;
+    $("group-name").value = "";
+    $("group-name").placeholder = "Family news";
+    $("group-members").value = c ? c.members.map((n) => "@" + n).join(" ") : "";
+    $("group-members").placeholder = "@sam @alex";
+    $("group-submit").textContent = c ? "Save" : "Create list";
+    $("group-error").textContent = "";
+    openDialog($("group-dialog"));
+    return;
+  }
+  $("group-name").placeholder = "Weekend plans";
   $("group-dialog-title").textContent = c ? `Add people to "${c.name}"` : "New group";
   $("group-name").hidden = $("group-name-label").hidden = !!c;
   $("group-name").value = "";
@@ -1910,6 +2062,21 @@ $("group-form").onsubmit = async (e) => {
   err.textContent = "";
   const bad = names.filter((n) => !USERNAME.test(n));
   if (bad.length) return (err.textContent = `"${bad[0]}" isn't a valid username.`);
+  if (groupDialogMode === "broadcast") {
+    const list = cleanMembers(names).filter((n) => n !== me.username);
+    if (!list.length) return (err.textContent = "Type at least one username.");
+    for (const n of list) {
+      try { await getKey(n); } catch (ex) { return (err.textContent = ex.status === 404 ? `Nobody is called @${n}.` : ex.message); }
+    }
+    closeDialog($("group-dialog"));
+    const id = groupDialogFor || "b:" + uuid();
+    chats[id] = Object.assign(chats[id] || { type: "broadcast", last: Date.now(), unread: 0, preview: "" }, {
+      members: list, name: groupDialogFor ? chats[id].name : $("group-name").value.trim().slice(0, 60) || "Broadcast list",
+    });
+    saveChats();
+    if (!groupDialogFor) systemMessage(id, `Messages here go to ${list.length} people separately. They reply to you privately.`);
+    return openChat(id);
+  }
   const c = groupDialogFor && chats[groupDialogFor];
   const fresh = names.filter((n) => n !== me.username && (!c || c.members.indexOf(n) === -1));
   if (!fresh.length) return (err.textContent = c ? "Type at least one new username." : "Type at least one friend's username.");
@@ -2752,6 +2919,17 @@ function start() {
   applyFlags();
   refreshProfile(me.username, true);
   Admin.init({ conn: () => conn, me: () => me, toast });
+  Stories.init({
+    me: () => me.username,
+    contacts: () => Object.keys(chats).filter((id) => USERNAME.test(id) && id !== me.username && !chats[id].blocked),
+    send: (to, payload) => sendControl(to, payload),
+    reply: (to, text) => { ensureChat(to); sendText(to, text); },
+    name: shortName,
+    avatar: (el, u) => fillAvatar(el, u),
+    toast,
+    shrink: (f) => Look.squareDataUrl(f, 720, 150000).catch(() => { throw new Error("That photo is too big. Try another."); }),
+  });
+  Stories.render();
   GroupCall.init({
     me: () => me.username,
     send: (to, payload) => sendPayload(to, payload, true),
@@ -3148,11 +3326,15 @@ $("poll-cancel").onclick = () => closeDialog($("poll-dialog"));
 $("poll-form").onsubmit = (e) => {
   e.preventDefault();
   const q = $("poll-q").value.trim();
-  const options = $("poll-options").value.split("\n").map((x) => x.trim()).filter(Boolean).slice(0, 10);
+  let options = $("poll-options").value.split("\n").map((x) => x.trim()).filter(Boolean).slice(0, 10);
+  const quiz = $("poll-quiz").checked;
+  const right = options.findIndex((o) => o.startsWith("*"));
+  options = options.map((o) => o.replace(/^\*\s*/, ""));
+  if (quiz && right === -1) return ($("poll-error").textContent = "For a quiz, put * in front of the right answer.");
   if (!q) return ($("poll-error").textContent = "Write a question.");
   if (options.length < 2) return ($("poll-error").textContent = "Write at least two answers, one per line.");
   closeDialog($("poll-dialog"));
-  sendSpecial(active, { poll: { q: q.slice(0, 300), options: options.map((o) => o.slice(0, 100)), multi: $("poll-multi").checked, votes: {} } });
+  sendSpecial(active, { poll: Object.assign({ q: q.slice(0, 300), options: options.map((o) => o.slice(0, 100)), multi: quiz ? false : $("poll-multi").checked, votes: {} }, quiz ? { quiz: right } : {}) });
 };
 
 // ---------- scheduled messages ----------
@@ -3488,6 +3670,7 @@ $("lock-form").onsubmit = async (e) => {
   if (Date.now() < lockedOut) return ($("lock-error").textContent = "Too many tries. Wait a moment.");
   if ((await pinHash($("lock-pin").value, lock.salt)) === lock.hash) {
     $("lock").hidden = true;
+    if (afterUnlock) { const f = afterUnlock; afterUnlock = null; f(); }
     lock.fails = 0;
     store.set("lock", lock);
     return;
@@ -3621,3 +3804,193 @@ document.addEventListener("keydown", (e) => {
     if (next) openChat(next);
   }
 });
+
+// ---------- games ----------
+
+function playMove(id, mid, cell) {
+  const m = findMessage(id, mid);
+  if (!m || !m.game) return;
+  const next = Games.move(m.game, me.username, cell);
+  if (!next) return;
+  patchMessage(id, mid, { game: next });
+  sendControlToChat(id, { kind: "game-move", mid, cell });
+}
+
+function startGame() {
+  if (!active) return;
+  setTimeout(() => showChatMenu(Games.GAMES.map(([type, label]) => [label, () => sendSpecial(active, { game: Games.newGame(type, me.username) })])), 0);
+}
+
+// ---------- contact cards ----------
+
+function contactCard(u) {
+  const box = document.createElement("div");
+  box.className = "contact-card";
+  const av = document.createElement("span");
+  av.className = "avatar";
+  fillAvatar(av, u);
+  const info = document.createElement("span");
+  const name = document.createElement("strong");
+  name.textContent = shortName(u);
+  const handle = document.createElement("small");
+  handle.textContent = "@" + u;
+  info.append(name, handle);
+  const b = document.createElement("button");
+  b.className = "ghost small";
+  b.textContent = u === me.username ? "That's you" : "Message";
+  b.onclick = (e) => { e.stopPropagation(); if (u !== me.username) openContact(u); };
+  box.append(av, info, b);
+  return box;
+}
+
+async function shareContact() {
+  if (!active) return;
+  const u = (prompt("Share which username? (Type it, e.g. @sam)") || "").trim().toLowerCase().replace(/^@/, "");
+  if (!u) return;
+  if (!USERNAME.test(u)) return toast("That isn't a valid username.");
+  try { await getKey(u); } catch { return toast(`Nobody is called @${u}.`); }
+  sendSpecial(active, { card: { u } });
+}
+
+// ---------- reminders, message info, dates, export ----------
+
+function remindMenu(id, m) {
+  const at = (h, mins, tomorrow) => { const d = new Date(); if (tomorrow) d.setDate(d.getDate() + 1); d.setHours(h, mins, 0, 0); return d.getTime(); };
+  const choices = [
+    ["In 20 minutes", Date.now() + 20 * 60e3],
+    ["In 1 hour", Date.now() + 3600e3],
+    ["In 3 hours", Date.now() + 3 * 3600e3],
+    ["Tonight at 8 PM", at(20, 0, Date.now() > at(19, 50))],
+    ["Tomorrow at 9 AM", at(9, 0, true)],
+    ["Pick a time…", 0],
+  ];
+  const go = (when) => {
+    if (!Relays.onPrimary()) return toast("Reminders need the home server, which isn't on right now.");
+    const what = m.text ? m.text.slice(0, 300) : previewText(m);
+    ensureChat(me.username);
+    sendSpecial(me.username, { text: `⏰ Reminder from ${chatTitle(id)}${m.from && !m.mine ? ` (${shortName(m.from)})` : ""}:\n${what}`, at: when, ts: when });
+    toast(`I'll remind you ${new Date(when).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })} in Saved messages.`);
+  };
+  const menuItems = choices.map(([label, when]) => [label, () => {
+    if (when) return go(when);
+    const raw = prompt("When? (for example 2026-12-24 18:30)", new Date(Date.now() + 86400e3).toISOString().slice(0, 16).replace("T", " "));
+    const t = raw && new Date(raw.replace(" ", "T")).getTime();
+    if (!t || t < Date.now() + 60e3) return toast("Pick a time at least a minute from now.");
+    go(t);
+  }]);
+  // The message menu is gone by now, so show the choices in the chat menu
+  // (after this click finishes, or the click would close it again).
+  setTimeout(() => showChatMenu(menuItems), 0);
+}
+
+function messageInfo(id, m) {
+  const list = $("info-list");
+  clear(list);
+  const add = (label, value) => {
+    const row = document.createElement("div");
+    row.className = "info-row";
+    const a = document.createElement("span");
+    a.textContent = label;
+    const b = document.createElement("strong");
+    b.textContent = value;
+    row.append(a, b);
+    list.appendChild(row);
+  };
+  add("Sent", new Date(m.ts).toLocaleString());
+  if (isGroup(id)) {
+    const by = m.readBy || {};
+    for (const n of recipients(id)) add(shortName(n), by[n] === "read" ? "✓✓ Read" : by[n] === "delivered" ? "✓ Delivered" : "Not yet");
+  } else {
+    add("Status", statusLabel(m) || "—");
+  }
+  openDialog($("info-dialog"));
+}
+$("info-close").onclick = () => closeDialog($("info-dialog"));
+
+function jumpToDate(id) {
+  const raw = prompt("Jump to which date? (YYYY-MM-DD)", new Date().toISOString().slice(0, 10));
+  if (!raw) return;
+  const t = new Date(raw + "T00:00").getTime();
+  if (!t) return toast("That isn't a date.");
+  const m = loadChat(id).find((x) => x.ts >= t);
+  if (!m) return toast("No messages from then or later.");
+  jumpTo(m.mid);
+}
+
+function exportChatText(id) {
+  const lines = [`${chatTitle(id)} — exported ${new Date().toLocaleString()}`, ""];
+  for (const m of loadChat(id)) {
+    if (m.deleted) continue;
+    const who = m.system ? "•" : m.mine ? "You" : shortName(m.from || id);
+    lines.push(`[${new Date(m.ts).toLocaleString()}] ${who}: ${m.system ? m.text : previewText(m) || ""}`);
+  }
+  download(new Blob([lines.join("\n")], { type: "text/plain" }), `${chatTitle(id).replace(/[^\w@ -]+/g, "").trim() || "chat"}.txt`);
+}
+
+// ---------- group photo and description ----------
+
+function editGroupInfo(id) {
+  const c = chats[id];
+  return [
+    ["Change the photo", () => $("group-photo-file").click()],
+    ["Remove the photo", () => { updateGroup(id, { photo: undefined }); systemMessage(id, "You removed the group photo"); }],
+    ["Edit the description", () => {
+      const d = prompt("Group description (everyone sees it):", c.desc || "");
+      if (d === null) return;
+      updateGroup(id, { desc: d.trim().slice(0, 500) });
+      systemMessage(id, "You changed the group description");
+    }],
+  ];
+}
+$("group-photo-file").onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f || !active || !isGroup(active)) return;
+  try {
+    const photo = await Look.squareDataUrl(f, 256, 60000);
+    updateGroup(active, { photo });
+    systemMessage(active, "You changed the group photo");
+  } catch (err) {
+    toast(err.message);
+  }
+};
+
+// ---------- locked chats ----------
+
+let afterUnlock = null;
+$("locked-btn").onclick = () => {
+  if (!store.get("lock", null)) return toast("Set an app lock PIN first (Settings → App lock), then lock chats from their ⋮ menu.");
+  afterUnlock = () => { showLocked = true; showArchived = false; renderChats(); };
+  lockNow();
+};
+
+// ---------- chat filters ----------
+
+document.querySelectorAll("#chat-filters button").forEach((b) => (b.onclick = () => { chatFilter = b.dataset.f; renderChats(); }));
+
+// ---------- QR code ----------
+
+$("qr-btn").onclick = () => {
+  const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  const link = (local ? location.origin + location.pathname : SITE_URL) + "#" + me.username;
+  Extras.drawQr($("qr-code"), link);
+  $("qr-link").textContent = link;
+  openDialog($("qr-dialog"));
+};
+$("qr-close").onclick = () => { Extras.stopScan(); closeDialog($("qr-dialog")); };
+$("qr-scan").onclick = () => Extras.scanQr((text) => {
+  closeDialog($("qr-dialog"));
+  const m = String(text).match(/#([a-z0-9_]{3,20})$/i) || String(text).match(/^@?([a-z0-9_]{3,20})$/i);
+  if (m) openContact(m[1].toLowerCase()); else toast("That code isn't a FreeMessenger link.");
+}, toast);
+
+// ---------- doodles and video messages ----------
+
+Extras.initDoodle();
+Extras.initVideoNote();
+$("attach-doodle-btn").onclick = () => { if (active) Extras.openDoodle((file) => sendFile(active, file)); };
+$("attach-vnote-btn").onclick = () => { if (active) Extras.startVideoNote((file, duration) => sendFile(active, file, { vnote: true, duration }), toast); };
+$("attach-game-btn").onclick = startGame;
+$("attach-contact-btn").onclick = shareContact;
+$("story-btn").onclick = () => Stories.compose();
+$("broadcast-btn").onclick = () => openGroupDialog(null, "broadcast");

@@ -56,6 +56,11 @@ Your friend does the same thing in their own browser. That's it.
 | 🎆 **Send effects** | Long-press or right-click **Send**: send silently, or with confetti, fireworks, hearts, balloons, lasers, snow or a shake |
 | 👀 **More** | View-once photos, location sharing, voice messages at 1.5× and 2×, "recording…" indicator, each chat's photos, files and links in one place, reply privately from a group, announcement-only groups |
 | 🔒 **Privacy** | Online and last seen (turn it off and you can't see others'), an app lock PIN, and Do Not Disturb hours |
+| 📸 **Stories** | A photo or text for 24 hours, seen by everyone you chat with; you see who viewed it |
+| 📢 **Broadcast lists** | Send one message to many people; each gets it privately |
+| 🎮 **Games** | Tic-tac-toe and Connect Four right in a chat |
+| ✏️ **Doodles and video messages** | Draw (or draw on a photo) and send it; round video messages up to a minute |
+| 🧰 **Even more** | Contact cards, your QR code (and scanning others'), reminders on any message, jump to a date, message info (who read it in a group), quiz polls, group photos and descriptions, locked chats, chat filters (Unread, Groups, People), text export of a chat, notification sounds per chat |
 | 🚩 **Report** | Tap a message → **Report to admin** if something's wrong. |
 | 🌐 **Web viewer** | For people the admin allows: open links through the server in a safe viewer with scripts turned off. |
 

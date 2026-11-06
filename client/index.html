@@ -68,7 +68,11 @@
         <div id="menu" class="menu" hidden>
           <button id="profile-btn">My profile</button>
           <button id="share-btn">Share my link</button>
+          <button id="story-btn">📸 Post a story</button>
           <button id="new-group-btn">New group</button>
+          <button id="broadcast-btn">📢 New broadcast list</button>
+          <button id="qr-btn">🔳 My QR code / scan</button>
+          <button id="locked-btn">🔒 Locked chats</button>
           <button id="browser-btn" hidden>Web viewer</button>
           <button id="saved-btn">⭐ Saved messages</button>
           <button id="starred-btn">Starred messages</button>
@@ -85,6 +89,7 @@
         <p><strong>Save your backup file.</strong> It's the only way to get your account back on a new browser.</p>
         <button id="banner-backup-btn" class="primary small">Download backup</button>
       </div>
+      <div id="stories" class="stories" hidden></div>
       <div class="search">
         <input id="search" type="search" autocomplete="off" placeholder="Search chats and messages" aria-label="Search chats and messages">
       </div>
@@ -94,6 +99,9 @@
         <button type="submit" class="primary small">Go</button>
       </form>
       <p id="add-error" class="error add-error" role="alert"></p>
+      <div id="chat-filters" class="chat-filters">
+        <button data-f="all" class="on">All</button><button data-f="unread">Unread</button><button data-f="groups">Groups</button><button data-f="people">People</button>
+      </div>
       <ul id="contacts"></ul>
       <ul id="results" hidden></ul>
       <p id="contacts-empty" class="hint">Type a friend's username above to start chatting.</p>
@@ -152,6 +160,10 @@
         <div id="attach-menu" class="menu attach-menu" hidden>
           <button type="button" id="attach-file-btn">📎 Photo, video or file</button>
           <button type="button" id="attach-once-btn">📷 View-once photo</button>
+          <button type="button" id="attach-vnote-btn">🎥 Video message</button>
+          <button type="button" id="attach-doodle-btn">✏️ Doodle</button>
+          <button type="button" id="attach-game-btn">🎮 Game</button>
+          <button type="button" id="attach-contact-btn">👤 Contact</button>
           <button type="button" id="attach-poll-btn">📊 Poll</button>
           <button type="button" id="attach-loc-btn">📍 Location</button>
           <button type="button" id="attach-schedule-btn">⏰ Schedule a message</button>
@@ -319,6 +331,7 @@
       <label>Question<input id="poll-q" maxlength="300" autocomplete="off" placeholder="Pizza or tacos?"></label>
       <label>Answers, one per line (2 to 10)<textarea id="poll-options" rows="5" placeholder="Pizza&#10;Tacos"></textarea></label>
       <label class="check"><input type="checkbox" id="poll-multi"> People can pick more than one</label>
+      <label class="check"><input type="checkbox" id="poll-quiz"> Quiz: put * in front of the right answer</label>
       <p id="poll-error" class="error" role="alert"></p>
       <div class="row"><button type="button" id="poll-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Send poll</button></div>
     </form>
@@ -376,6 +389,66 @@
     </dl>
     <button type="button" id="install-close" class="ghost">Close</button>
   </dialog>
+
+  <input type="file" id="group-photo-file" accept="image/*" hidden>
+
+  <dialog id="story-dialog">
+    <form id="story-form" class="stack-form">
+      <h2>New story (24 hours)</h2>
+      <textarea id="story-text" class="story-text" rows="4" maxlength="500" placeholder="Say something…"></textarea>
+      <img id="story-preview" class="story-preview" alt="" hidden>
+      <input type="file" id="story-photo" accept="image/*" hidden>
+      <div class="row">
+        <button type="button" id="story-bg" class="ghost small">🎨 Color</button>
+        <button type="button" id="story-photo-btn" class="ghost small">🖼 Photo</button>
+      </div>
+      <p class="fine">Everyone you have a chat with can see it for 24 hours, and you see who viewed it.</p>
+      <div class="row"><button type="button" id="story-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Share</button></div>
+    </form>
+  </dialog>
+
+  <div id="story-viewer" class="story-viewer" hidden>
+    <div id="story-progress" class="story-progress"></div>
+    <div class="story-head"><strong id="story-who"></strong><button id="story-close" class="round">✕</button></div>
+    <div id="story-stage" class="story-stage"></div>
+    <div id="story-viewers" class="story-viewers" hidden></div>
+    <form id="story-reply-form" class="story-reply"><input id="story-reply" placeholder="Reply…" autocomplete="off"><button class="primary small">Send</button></form>
+  </div>
+
+  <dialog id="info-dialog">
+    <h2>Message info</h2>
+    <div id="info-list" class="info-list"></div>
+    <button type="button" id="info-close" class="primary">Close</button>
+  </dialog>
+
+  <dialog id="qr-dialog" class="qr-dialog">
+    <h2>Your FreeMessenger code</h2>
+    <p class="fine">Friends scan it with their phone's camera to message you.</p>
+    <div id="qr-code" class="qr-code"></div>
+    <p id="qr-link" class="fine wrap"></p>
+    <video id="qr-video" class="qr-video" playsinline muted hidden></video>
+    <div class="row"><button type="button" id="qr-scan" class="ghost">📷 Scan a code</button><button type="button" id="qr-close" class="primary">Done</button></div>
+  </dialog>
+
+  <div id="doodle" class="doodle" hidden>
+    <div class="doodle-bar">
+      <button id="doodle-cancel" class="round">✕</button>
+      <div id="doodle-colors" class="doodle-colors"></div>
+      <input type="range" id="doodle-size" min="2" max="30" value="6" title="Brush size">
+      <button id="doodle-undo" class="round">↶</button>
+      <button id="doodle-clear" class="round">🗑</button>
+      <button id="doodle-photo" class="round">🖼</button>
+      <button id="doodle-send" class="primary">Send</button>
+      <input type="file" id="doodle-file" accept="image/*" hidden>
+    </div>
+    <div class="doodle-wrap"><canvas id="doodle-canvas"></canvas></div>
+  </div>
+
+  <div id="vnote" class="vnote-rec" hidden>
+    <video id="vnote-preview" autoplay playsinline muted></video>
+    <span id="vnote-time">0:00 / 1:00</span>
+    <div class="row"><button id="vnote-cancel" class="round">Cancel</button><button id="vnote-send" class="accept">Send</button></div>
+  </div>
 
   <dialog id="privacy-dialog">
     <h2>What's new in FreeMessenger</h2>
