@@ -117,7 +117,8 @@ export async function coturnServers(turn, username) {
   const key = await crypto.subtle.importKey("raw", enc.encode(turn.secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
   const credential = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(user)))));
   const port = turn.port || 3478;
-  return [{ urls: [`turn:${turn.host}:${port}?transport=udp`, `turn:${turn.host}:${port}?transport=tcp`], username: user, credential }];
+  const host = turn.host.includes(":") ? `[${turn.host}]` : turn.host;
+  return [{ urls: [`turn:${host}:${port}?transport=udp`, `turn:${host}:${port}?transport=tcp`], username: user, credential }];
 }
 
 export const STUN = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
