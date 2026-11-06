@@ -64,6 +64,7 @@
           <button id="share-btn">Share my link</button>
           <button id="new-group-btn">New group</button>
           <button id="browser-btn" hidden>Web viewer</button>
+          <button id="saved-btn">⭐ Saved messages</button>
           <button id="starred-btn">Starred messages</button>
           <button id="calls-btn">Call history</button>
           <button id="settings-btn">Settings</button>
@@ -144,9 +145,14 @@
         </div>
         <div id="attach-menu" class="menu attach-menu" hidden>
           <button type="button" id="attach-file-btn">📎 Photo, video or file</button>
+          <button type="button" id="attach-once-btn">📷 View-once photo</button>
           <button type="button" id="attach-poll-btn">📊 Poll</button>
+          <button type="button" id="attach-loc-btn">📍 Location</button>
           <button type="button" id="attach-schedule-btn">⏰ Schedule a message</button>
+          <button type="button" id="send-options-btn">✨ Send silently or with an effect</button>
         </div>
+        <input type="file" id="once-file" accept="image/*" hidden>
+        <div id="mention-list" class="menu mention-list" hidden></div>
         <form id="send-form" class="composer">
           <button type="button" id="attach-btn" class="icon" aria-label="Attach, poll or schedule" title="Attach, poll or schedule">
             <svg viewBox="0 0 24 24"><path d="M16.5 6.5l-7.8 7.8a2 2 0 002.8 2.8l7.8-7.8a4 4 0 00-5.7-5.7l-7.8 7.8a6 6 0 008.5 8.5l6.4-6.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -243,7 +249,15 @@
     <p class="hint tight">Color, gradient or picture for each part:</p>
     <div id="set-bars" class="bar-buttons"></div>
     <p class="fine">Each chat can also have its own background and animation: open the chat, then ⋮ → Background and animation.</p>
-    <h3 class="settings-head">Privacy</h3>
+    <h3 class="settings-head">Privacy and security</h3>
+    <label class="setting"><span>Show when I'm online and last seen (if off, you can't see others')</span><input type="checkbox" id="set-seen"></label>
+    <div class="setting"><span>App lock (a PIN to open FreeMessenger here)</span><button type="button" id="lock-btn" class="ghost small">Set a PIN</button></div>
+    <label class="setting"><span>Lock after leaving the app for</span>
+      <select id="set-lock-after"><option value="0">Right away</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select>
+    </label>
+    <h3 class="settings-head">Do Not Disturb</h3>
+    <div class="setting"><span><input type="checkbox" id="set-dnd"> Silence notifications from</span><span><input type="time" id="set-dnd-from"> to <input type="time" id="set-dnd-to"></span></div>
+    <p class="fine">@mentions still notify you in muted groups. Keyboard: Ctrl/⌘+K search, Ctrl/⌘+E emoji, Alt+↑/↓ switch chats. Long-press or right-click Send for silent sending and effects. Formatting: **bold**, _italic_, ~strike~, `code`, ||spoiler||.</p>
     <p class="fine">Messages are encrypted, but every saved message carries a copy the site admin can read, to stop illegal content. The admin can also see your account details and IP address, and can freeze, time out or ban accounts. Typing and call audio/video aren't saved.</p>
     <button id="settings-close" class="primary">Done</button>
   </dialog>
@@ -320,6 +334,27 @@
     <div id="forward-list" class="forward-list"></div>
     <div class="row"><button type="button" id="forward-cancel" class="ghost">Cancel</button><button type="button" id="forward-send" class="primary">Forward</button></div>
   </dialog>
+
+  <dialog id="media-dialog" class="media-dialog">
+    <h2>Shared in <span id="media-title"></span></h2>
+    <h3 class="settings-head">Photos and videos</h3>
+    <div id="media-photos" class="media-grid"></div>
+    <h3 class="settings-head">Files</h3>
+    <div id="media-files" class="media-list"></div>
+    <h3 class="settings-head">Links</h3>
+    <div id="media-links" class="media-list"></div>
+    <button type="button" id="media-close" class="primary">Close</button>
+  </dialog>
+
+  <div id="lock" class="lock" hidden>
+    <form id="lock-form" class="card">
+      <div class="logo" aria-hidden="true"></div>
+      <h1>FreeMessenger is locked</h1>
+      <input id="lock-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="PIN" class="code-input">
+      <p id="lock-error" class="error" role="alert"></p>
+      <button type="submit" class="primary">Unlock</button>
+    </form>
+  </div>
 
   <dialog id="privacy-dialog">
     <h2>What's new in FreeMessenger</h2>

@@ -83,6 +83,7 @@ db.exec(`
 {
   const cols = db.prepare("PRAGMA table_info(accounts)").all().map((c) => c.name);
   if (!cols.includes("quotaGB")) db.exec("ALTER TABLE accounts ADD COLUMN quotaGB REAL");
+  if (!cols.includes("hideSeen")) db.exec("ALTER TABLE accounts ADD COLUMN hideSeen INTEGER DEFAULT 0");
   if (!db.prepare("SELECT 1 FROM usage LIMIT 1").get()) {
     db.exec("INSERT OR REPLACE INTO usage (username, bytes) SELECT sender, SUM(size) FROM archive GROUP BY sender");
   }
@@ -412,6 +413,22 @@ async function op(a, type, msg, sess) {
   if (type === "history") return history(a.username, msg);
   if (type === "announcements") return { announcements: announcementsSince(msg.after) };
   if (type === "rename") return renameAccount(a, String(msg.name || "").toLowerCase());
+  // Online / last seen. Like WhatsApp: if you hide yours, you can't see anyone's.
+  if (type === "privacy") {
+    q("UPDATE accounts SET hideSeen = ? WHERE username = ?").run(msg.hideSeen ? 1 : 0, a.username);
+    return { ok: true };
+  }
+  if (type === "presence") {
+    const meAcct = getAccount(a.username);
+    if (meAcct.hideSeen) return { presence: {}, hidden: true };
+    const out = {};
+    for (const n of (Array.isArray(msg.users) ? msg.users : []).slice(0, 300)) {
+      const u = getAccount(String(n));
+      if (!u || u.hideSeen || u.status === "banned") continue;
+      out[u.username] = { online: isOnline(u.username), seen: u.lastSeen || 0 };
+    }
+    return { presence: out };
+  }
   if (type === "unschedule") {
     const ids = (Array.isArray(msg.sids) ? msg.sids : []).slice(0, 100);
     let n = 0;
@@ -814,6 +831,7 @@ async function httpOp(name, msg, ip) {
   const user = sessionUser(name, msg.token);
   if (!user || user.status === "banned") return [401, { error: "session expired" }];
   if (msg.op === "poll") {
+    if (now - (lastPoll.get(name) || 0) > 60e3) q("UPDATE accounts SET lastSeen = ? WHERE username = ?").run(now, name);
     lastPoll.set(name, now);
     const after = msg.after && Number.isFinite(msg.after.ts) && typeof msg.after.id === "string" ? msg.after : { ts: -1, id: "" };
     const rows = q("SELECT env FROM queue WHERE recipient = ? AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts, id LIMIT 200")
@@ -1017,10 +1035,12 @@ function onSocket(ws, name, ip) {
       return;
     }
     if (msg.type === "ack") return ack(name, msg.items);
+    if (Date.now() - (sess.touched || 0) > 60e3) { sess.touched = Date.now(); q("UPDATE accounts SET lastSeen = ? WHERE username = ?").run(Date.now(), name); }
     const r = await op(a, msg.type, msg, sess);
     if (r) ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
   });
   ws.on("close", () => {
+    if (authed) q("UPDATE accounts SET lastSeen = ? WHERE username = ?").run(Date.now(), name);
     const set = sockets.get(name);
     if (set) { set.delete(ws); if (!set.size) sockets.delete(name); }
   });
