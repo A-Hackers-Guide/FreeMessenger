@@ -2966,6 +2966,8 @@ $("notify-btn").onclick = async () => {
 };
 $("install-btn").onclick = () => Push.install();
 Push.initInstall();
+$("welcome-install-btn").onclick = () => Push.install();
+if (/source=(android|app)/.test(location.search) || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)) $("welcome-install-btn").hidden = true;
 $("logout-btn").onclick = async () => {
   if (!confirm("Sign out of this browser? Your account only comes back with your backup file. Messages saved here will be removed.")) return;
   await Push.disable(conn);
