@@ -544,3 +544,4 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .install-list { margin: 0 0 12px; display: grid; gap: 8px; font-size: 14px; }
 .install-list dt { font-weight: 700; }
 .install-list dd { margin: 0; color: var(--muted); }
+.get-app { display: block; margin: 14px auto 0; font-size: 14px; }
