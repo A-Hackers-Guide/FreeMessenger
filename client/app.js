@@ -10,13 +10,14 @@ import * as Look from "./look.js";
 import * as Admin from "./admin.js";
 import * as Browser from "./browser.js";
 import { EMOJI, STICKERS } from "./emoji.js";
+import * as GroupCall from "./groupcall.js";
 
 window.FM_LOADED = true;
 
 const $ = (id) => document.getElementById(id);
 const USERNAME = /^[a-z0-9_]{3,20}$/;
 const MAX_HISTORY = 2000;
-const MAX_GROUP = 32;
+const MAX_GROUP = 256;
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 const TTL_CHOICES = [[0, "Off"], [3600, "1 hour"], [86400, "1 day"], [604800, "1 week"], [2592000, "30 days"]];
 // Invite links always point at the real site, even when FreeMessenger was
@@ -144,15 +145,19 @@ async function connect() {
       if (on) {
         flushOutbox();
         Push.refresh(conn);
+        if (flags.primary && c.relay !== Relays.BACKUP) { loadAnnouncements(); syncDevice(); }
       }
     },
     onFlags: (f) => {
       flags = f;
       store.set("flags", flags);
       applyFlags();
-      if (f.primary) loadAnnouncements();
+
     },
-    onEvent: (ev) => { if (ev.type === "announce") showAnnouncements([ev]); },
+    onEvent: (ev) => {
+      if (ev.type === "announce") showAnnouncements([ev]);
+      if (ev.type === "mirror") handleMirror(ev);
+    },
     onFatal: (message) => toast(message || "This browser's keys don't match your account. Restore your backup file."),
   });
   conn = c;
@@ -237,7 +242,7 @@ let lastBlockedToast = 0;
 // Messages people should hear about wake the other person's device; edits,
 // receipts, file pieces and typing don't.
 const CHAT_KINDS = ["text", "file", "poll", "sticker"];
-const pushHint = (p) => (CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" ? "call" : undefined);
+const pushHint = (p) => (CHAT_KINDS.indexOf(p.kind) !== -1 || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" || p.kind === "gcall-ring" ? "call" : undefined);
 
 // Every saved message also carries an "admin copy", encrypted for the site
 // admin, who can read it in the admin panel (people are told this when they
@@ -352,7 +357,10 @@ async function handleIncoming(env) {
       return showTyping(id, env.from);
     case "ttl":
       return setTtl(id, Number(p.ttl) || 0, env.from);
+    case "renamed":
+      return handleRenamed(env.from, p);
     default:
+      if (typeof p.kind === "string" && p.kind.indexOf("gcall-") === 0 && p.gid) return GroupCall.handle(env.from, p, env.ts);
       if (!p.gid) handleCall(env.from, p, env.ts);
   }
 }
@@ -443,12 +451,25 @@ function cleanMembers(list) {
   return out.slice(0, MAX_GROUP);
 }
 
+// Groups made before group admins existed treat every member as an admin.
+const groupAdmins = (c) => (c && Array.isArray(c.admins) && c.admins.length ? c.admins : (c && c.members) || []);
+const isGroupAdmin = (c, name) => groupAdmins(c).indexOf(name) !== -1;
+
 function handleGroupEvent(from, p, ts) {
   const id = "g:" + String(p.gid);
   if (!/^g:[0-9a-f-]{36}$/.test(id)) return;
   const c = chats[id];
+  // Someone opened this group's invite link and asks to be added.
+  if (p.op === "join-request") {
+    if (!c || c.left || !isGroupAdmin(c, me.username) || !c.invite || p.token !== c.invite) return;
+    if (c.members.indexOf(from) !== -1) return;
+    if (c.members.length >= MAX_GROUP) return;
+    updateGroup(id, { members: c.members.concat(from) });
+    return systemMessage(id, `${shortName(from)} joined with the invite link`, ts);
+  }
   const members = cleanMembers(p.members);
   const name = String(p.name || "Group").slice(0, 60);
+  const admins = cleanMembers(p.admins).filter((n) => members.indexOf(n) !== -1);
   if (p.op === "leave") {
     if (!c || c.members.indexOf(from) === -1) return;
     c.members = c.members.filter((n) => n !== from);
@@ -456,13 +477,27 @@ function handleGroupEvent(from, p, ts) {
     if (active === id) renderHeader();
     return systemMessage(id, `${shortName(from)} left the group`, ts);
   }
-  if (members.indexOf(me.username) === -1) return;
+  // Only group admins can change the group.
+  if (c && !c.pending && !c.left && !isGroupAdmin(c, from)) return;
+  if (members.indexOf(me.username) === -1) {
+    if (c && !c.left && c.members.indexOf(me.username) !== -1 && p.op === "update") {
+      c.left = true;
+      c.members = members;
+      saveChats();
+      if (active === id) renderHeader();
+      systemMessage(id, `${shortName(from)} removed you from the group`, ts);
+    }
+    return;
+  }
   if (c && !c.pending && c.members.indexOf(from) === -1) return;
   const before = c ? c.members : [];
   const wasPending = !c || c.pending;
   const added = members.filter((n) => before.indexOf(n) === -1 && n !== from && n !== me.username);
   const renamed = c && !c.pending && c.name !== name;
+  const removed = c && !c.pending ? c.members.filter((n) => members.indexOf(n) === -1 && n !== from) : [];
   chats[id] = Object.assign(c || { last: 0, unread: 0, preview: "" }, { type: "group", name, members, pending: false, left: false });
+  if (admins.length) chats[id].admins = admins;
+  if (removed.length) systemMessage(id, `${shortName(from)} removed ${removed.map(shortName).join(", ")}`, ts);
   saveChats();
   if (wasPending) systemMessage(id, `${shortName(from)} added you to "${name}"`, ts);
   else {
@@ -476,10 +511,10 @@ async function createGroup(name, names) {
   const gid = uuid();
   const id = "g:" + gid;
   const members = cleanMembers([me.username].concat(names));
-  chats[id] = { type: "group", name, members, last: Date.now(), unread: 0, preview: "" };
+  chats[id] = { type: "group", name, members, admins: [me.username], last: Date.now(), unread: 0, preview: "" };
   saveChats();
   systemMessage(id, `You created "${name}"`);
-  sendControlToChat(id, { kind: "group", op: "create", name, members });
+  sendControlToChat(id, { kind: "group", op: "create", name, members, admins: [me.username] });
   openChat(id);
 }
 
@@ -489,7 +524,8 @@ async function updateGroup(id, changes) {
   Object.assign(c, changes);
   saveChats();
   const everyone = cleanMembers(oldMembers.concat(c.members)).filter((n) => n !== me.username);
-  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members }));
+  if (c.admins) c.admins = c.admins.filter((n) => c.members.indexOf(n) !== -1);
+  everyone.forEach((to) => sendControl(to, { kind: "group", op: "update", gid: id.slice(2), name: c.name, members: c.members, admins: c.admins }));
   renderHeader();
   renderChats();
 }
@@ -1210,7 +1246,7 @@ function renderHeader() {
   const status = group ? "" : profileOf(active).status || "";
   $("peer-status").textContent = status;
   $("peer-status").hidden = !status;
-  $("voice-btn").hidden = $("video-btn").hidden = group || !!c.blocked;
+  $("voice-btn").hidden = $("video-btn").hidden = !!c.blocked || (group && !!c.left);
   $("safety-btn").hidden = group;
   $("members-btn").hidden = !group;
   if (group) $("members-btn").textContent = c.left ? "You left this group" : `${(c.members || []).length} members`;
@@ -1605,7 +1641,12 @@ function mainChatMenu() {
     toast(c.muted ? "Muted." : "Notifications on for this chat.");
   }]);
   if (group) {
-    if (!c.left) {
+    if (!c.left) items.push([`Members (${c.members.length})`, () => memberMenu(id)]);
+    if (!c.left && isGroupAdmin(c, me.username)) {
+      items.push([c.invite ? "Invite link (copy)" : "Make an invite link", () => groupInviteLink(id, false)]);
+      if (c.invite) items.push(["Turn off the invite link", () => { c.invite = null; saveChats(); toast("The old link no longer works."); }]);
+    }
+    if (!c.left && isGroupAdmin(c, me.username)) {
       items.push(["Rename group", () => {
         const name = prompt("Group name:", c.name);
         if (name && name.trim()) {
@@ -1614,8 +1655,8 @@ function mainChatMenu() {
         }
       }]);
       items.push(["Add people", () => openGroupDialog(id)]);
-      items.push(["Leave group", () => { if (confirm(`Leave "${c.name}"?`)) leaveGroup(id); }, "danger-text"]);
     }
+    if (!c.left) items.push(["Leave group", () => { if (confirm(`Leave "${c.name}"?`)) leaveGroup(id); }, "danger-text"]);
   } else {
     items.push(["Rename this chat (only you see it)", () => {
       const nick = prompt(`Nickname for @${id} (only you see it):`, c.nickname || "");
@@ -1652,6 +1693,55 @@ function mainChatMenu() {
     }, "danger-text"]);
   }
   return items;
+}
+
+function memberMenu(id) {
+  const c = chats[id];
+  const amAdmin = isGroupAdmin(c, me.username);
+  return c.members.map((n) => {
+    const label = (n === me.username ? "You" : shortName(n)) + (isGroupAdmin(c, n) && c.admins ? " · admin" : "");
+    if (!amAdmin || n === me.username) return [label, () => (n === me.username ? null : openContact(n))];
+    return [label, () => [
+      ["Message " + shortName(n), () => openContact(n)],
+      [isGroupAdmin(c, n) && c.admins ? "Remove as admin" : "Make admin", () => {
+        const admins = (c.admins || [me.username]).slice();
+        const next = admins.indexOf(n) !== -1 ? admins.filter((x) => x !== n) : admins.concat(n);
+        updateGroup(id, { admins: next.length ? next : [me.username] });
+        systemMessage(id, admins.indexOf(n) !== -1 ? `You removed ${shortName(n)} as admin` : `You made ${shortName(n)} an admin`);
+      }],
+      ["Remove from group", () => {
+        if (!confirm(`Remove ${shortName(n)} from "${c.name}"?`)) return;
+        updateGroup(id, { members: c.members.filter((x) => x !== n) });
+        systemMessage(id, `You removed ${shortName(n)}`);
+      }, "danger-text"],
+    ]];
+  });
+}
+
+async function groupInviteLink(id) {
+  const c = chats[id];
+  if (!c.invite) {
+    c.invite = uuid().replace(/-/g, "").slice(0, 16);
+    if (!c.admins) c.admins = [me.username];
+    saveChats();
+  }
+  const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  const link = (local ? location.origin + location.pathname : SITE_URL) + `#join=${id.slice(2)}.${c.invite}.${me.username}`;
+  await copyText(link);
+  toast("Invite link copied. Anyone who opens it joins when your app is online.");
+}
+
+function handleJoinLink(hash) {
+  const m = hash.match(/^join=([0-9a-f-]{36})\.([0-9a-f]{16})\.([a-z0-9_]{3,20})$/);
+  if (!m) return false;
+  const [, gid, token, admin] = m;
+  history.replaceState(null, "", location.pathname + location.search);
+  const c = chats["g:" + gid];
+  if (c && !c.left && c.members.indexOf(me.username) !== -1) { openChat("g:" + gid); return true; }
+  if (admin === me.username) return true;
+  sendControl(admin, { kind: "group", op: "join-request", gid, token });
+  toast(`Asked ${shortName(admin)} to add you. You'll join as soon as their app is online.`);
+  return true;
 }
 
 // ---------- group dialog ----------
@@ -1789,7 +1879,7 @@ async function startCall(peer, video) {
     ? "Calls only work when the address starts with https://. Texting still works here."
     : "This browser can't make calls. Texting still works.");
   conn.boost(60000);
-  Object.assign(call, { state: "calling", peer, id: uuid(), video, started: 0, pendingIce: [] });
+  Object.assign(call, { state: "calling", peer, id: uuid(), video, started: 0, pendingIce: [], dir: "out" });
   showCallScreen(`Calling…`);
   try {
     call.local = await getMedia(video);
@@ -1834,7 +1924,7 @@ async function handleCall(from, p, ts) {
   if (p.kind === "call-offer") {
     if (Date.now() - ts > 60000) return;
     if (call.state !== "idle") return sendPayload(from, { kind: "call-busy", callId: p.callId }, true);
-    Object.assign(call, { state: "ringing", peer: from, id: p.callId, video: !!p.video, offer: p.sdp, started: 0, pendingIce: [] });
+    Object.assign(call, { state: "ringing", peer: from, id: p.callId, video: !!p.video, offer: p.sdp, started: 0, pendingIce: [], dir: "in" });
     conn.boost(60000);
     showCallScreen(p.video ? "Incoming video call" : "Incoming voice call", true);
     startRinging(true);
@@ -1874,6 +1964,12 @@ function endCall(tellPeer, note) {
     sendPayload(call.peer, { kind: call.state === "ringing" ? "call-decline" : "call-end", callId: call.id }, true);
   }
   const peer = call.peer;
+  if (peer) logCall({
+    peer, video: call.video, dir: call.dir, ts: call.started || Date.now(),
+    dur: call.started ? Math.round((Date.now() - call.started) / 1000) : 0,
+    missed: call.dir === "in" && !call.started && call.state === "ringing" && !tellPeer,
+    result: note || (call.started ? "" : call.state === "ringing" && tellPeer ? "Declined" : "Not answered"),
+  });
   const label = call.started
     ? `${call.video ? "Video" : "Voice"} call · ${duration()}`
     : note || (call.state === "ringing" ? "Declined call" : "Call ended");
@@ -2195,6 +2291,53 @@ $("profile-save").onclick = async () => {
 
 // ---------- your message history from the server ----------
 
+// Puts messages from the server's history into this browser: ones you sent
+// from another device, and ones another device received for you.
+async function importHistory(all, quiet) {
+  let added = 0;
+  const touched = new Set();
+  for (const env of all) {
+    const mine = env.from === me.username;
+    let p;
+    try { p = await E2E.decrypt(me, await getKey(mine ? env.to : env.from), env.body); } catch { continue; }
+    if (p.kind === "group") {
+      if (!mine) handleGroupEvent(env.from, p, env.ts);
+      else if (p.op !== "leave" && p.op !== "join-request" && p.gid && !chats["g:" + p.gid]) {
+        chats["g:" + p.gid] = { type: "group", name: String(p.name || "Group").slice(0, 60), members: cleanMembers(p.members), admins: cleanMembers(p.admins), last: env.ts, unread: 0, preview: "" };
+        saveChats();
+      }
+      continue;
+    }
+    if (mine && (p.kind === "edit" || p.kind === "delete")) {
+      const id = p.gid ? "g:" + p.gid : env.to;
+      const m = findMessage(id, p.mid);
+      if (m && m.mine) p.kind === "edit" ? patchMessage(id, p.mid, { text: String(p.text).slice(0, 8000), edited: env.ts }) : deleteMessage(id, p.mid, true);
+      continue;
+    }
+    if (CHAT_KINDS.indexOf(p.kind) === -1) continue;
+    const id = p.gid ? "g:" + p.gid : mine ? env.to : env.from;
+    if (findMessage(id, p.mid)) continue;
+    ensureChat(id);
+    const list = loadChat(id);
+    const m = Object.assign({ mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts }, cleanExtras(p));
+    if (mine) m.status = "sent";
+    if (p.kind === "file") m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: true };
+    list.push(m);
+    list.sort((a, b) => a.ts - b.ts);
+    saveChat(id, list);
+    const c = chats[id];
+    if (env.ts >= (c.last || 0)) { c.last = env.ts; c.preview = (mine ? "You: " : "") + previewText(m); }
+    if (quiet && !mine && active !== id) c.unread = (c.unread || 0) + 1;
+    touched.add(id);
+    added++;
+  }
+  saveChats();
+  renderChats();
+  updateTitle();
+  if (active && touched.has(active)) openChat(active, { keepScroll: true });
+  return added;
+}
+
 async function downloadHistory() {
   if (!conn || !conn.ready) return toast("You're offline. Try again when you're connected.");
   if (!Relays.onPrimary()) return toast("History is kept on the home server, which isn't on right now.");
@@ -2212,45 +2355,150 @@ async function downloadHistory() {
       before = r.messages[r.messages.length - 1].ts;
     }
     all.sort((a, b) => a.ts - b.ts);
-    let added = 0;
-    const touched = new Set();
-    for (const env of all) {
-      const mine = env.from === me.username;
-      let p;
-      try { p = await E2E.decrypt(me, await getKey(mine ? env.to : env.from), env.body); } catch { continue; }
-      if (p.kind === "group") {
-        if (!mine) handleGroupEvent(env.from, p, env.ts);
-        else if (p.op !== "leave" && p.gid && !chats["g:" + p.gid]) {
-          chats["g:" + p.gid] = { type: "group", name: String(p.name || "Group").slice(0, 60), members: cleanMembers(p.members), last: env.ts, unread: 0, preview: "" };
-          saveChats();
-        }
-        continue;
-      }
-      if (CHAT_KINDS.indexOf(p.kind) === -1) continue;
-      const id = p.gid ? "g:" + p.gid : mine ? env.to : env.from;
-      if (findMessage(id, p.mid)) continue;
-      ensureChat(id);
-      const list = loadChat(id);
-      const m = Object.assign({ mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts }, cleanExtras(p));
-      if (mine) m.status = "sent";
-      if (p.kind === "file") m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: true };
-      list.push(m);
-      list.sort((a, b) => a.ts - b.ts);
-      saveChat(id, list);
-      const c = chats[id];
-      if (env.ts >= (c.last || 0)) { c.last = env.ts; c.preview = (mine ? "You: " : "") + previewText(m); }
-      touched.add(id);
-      added++;
-    }
-    saveChats();
-    renderChats();
-    if (active && touched.has(active)) openChat(active, { keepScroll: true });
+    const added = await importHistory(all, false);
     toast(added ? `Added ${added} messages from the server.` : "Everything was already here.");
   } catch (e) {
     toast(e.message || "Couldn't download your history.");
   } finally {
     btn.disabled = false;
     btn.textContent = "Download";
+  }
+}
+
+// Keeps this device in step with your others: each time it connects to the
+// home server it fetches what happened since it last looked.
+let syncingDevice = false;
+async function syncDevice() {
+  if (syncingDevice || !conn || !conn.ready || !Relays.onPrimary()) return;
+  syncingDevice = true;
+  try {
+    let after = store.get("syncedTo", 0);
+    if (!after) { store.set("syncedTo", Date.now()); return; }
+    for (let i = 0; i < 20; i++) {
+      const r = await conn.op("history", { after });
+      if (!r || r.error || !r.messages) break;
+      if (r.messages.length) {
+        await importHistory(r.messages, true);
+        after = r.messages[r.messages.length - 1].ts;
+        store.set("syncedTo", after);
+      }
+      if (r.done) break;
+    }
+  } finally {
+    syncingDevice = false;
+  }
+}
+
+// Something you just sent from another device.
+async function handleMirror(env) {
+  if (!env || env.from !== me.username) return;
+  store.set("syncedTo", Math.max(store.get("syncedTo", 0), env.ts));
+  await importHistory([env], false);
+}
+
+// ---------- changing your username ----------
+
+async function changeUsername() {
+  if (!conn || !conn.ready || !Relays.onPrimary()) return toast("Changing your username needs the home server, which isn't reachable right now.");
+  const name = (prompt("New username (3-20 characters: a-z, 0-9 and _). You can change it once a month, and your old name keeps working as a link to you.", "") || "").trim().toLowerCase().replace(/^@/, "");
+  if (!name) return;
+  const r = await conn.op("rename", { name });
+  if (r.error) return toast(r.error);
+  const old = me.username;
+  me.username = r.username;
+  store.set("identity", me);
+  store.set("backedUp", false);
+  // Tell everyone you talk to, so their chats move to the new name.
+  const people = new Set();
+  for (const id of Object.keys(chats)) recipients(id).forEach((n) => people.add(n));
+  people.forEach((to) => sendControl(to, { kind: "renamed", old, name: r.username }));
+  for (const id of Object.keys(chats)) {
+    if (isGroup(id) && chats[id].members) chats[id].members = chats[id].members.map((n) => (n === old ? r.username : n));
+    if (isGroup(id) && chats[id].admins) chats[id].admins = chats[id].admins.map((n) => (n === old ? r.username : n));
+  }
+  saveChats();
+  $("me-name").textContent = profileOf(old).display || "@" + r.username;
+  $("backup-banner").hidden = false;
+  toast(`You're @${r.username} now. Download a new backup file.`);
+  closeDialog($("settings-dialog"));
+  connect();
+}
+
+// Someone you talk to changed their username: move their chat over, once the
+// server confirms the old name now points at the new one.
+async function handleRenamed(from, p) {
+  const old = String(p.old || "").toLowerCase();
+  if (!USERNAME.test(old) || old === from) return;
+  try {
+    const r = await api(`/api/user/${old}`);
+    if (r.username !== from) return;
+  } catch { return; }
+  if (chats[old] && !chats[from]) {
+    chats[from] = chats[old];
+    delete chats[old];
+    saveChat(from, loadChat(old).map((m) => (m.from === old ? Object.assign(m, { from }) : m)));
+    store.remove("chat." + old);
+    if (active === old) active = from;
+  }
+  if (peers[old]) { peers[from] = peers[old]; delete peers[old]; savePeers(); }
+  for (const id of Object.keys(chats)) {
+    const c = chats[id];
+    if (!isGroup(id)) continue;
+    if (c.members) c.members = c.members.map((n) => (n === old ? from : n));
+    if (c.admins) c.admins = c.admins.map((n) => (n === old ? from : n));
+  }
+  saveChats();
+  renderChats();
+  if (chats[from]) systemMessage(from, `@${old} is now @${from}`);
+  if (active === from) openChat(from);
+}
+
+// ---------- call history ----------
+
+function logCall(entry) {
+  const list = store.get("callLog", []);
+  list.push(entry);
+  store.set("callLog", list.slice(-300));
+}
+
+function showCalls() {
+  const results = $("results");
+  $("contacts").hidden = true;
+  results.hidden = false;
+  clear(results);
+  const back = document.createElement("li");
+  back.className = "none";
+  const b = document.createElement("button");
+  b.className = "link";
+  b.textContent = "Back to chats";
+  b.onclick = (e) => { e.stopPropagation(); closeSearch(); };
+  back.appendChild(b);
+  results.appendChild(back);
+  const list = store.get("callLog", []).slice().reverse();
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "none";
+    li.textContent = "No calls yet.";
+    results.appendChild(li);
+  }
+  for (const c of list) {
+    const id = c.group || c.peer;
+    if (!id) continue;
+    const icon = c.missed ? "↙️ Missed" : c.dir === "in" ? "↙️" : "↗️";
+    const what = `${icon} ${c.video ? "Video" : "Voice"}${c.group ? " group" : ""} call · ${new Date(c.ts).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${c.dur ? ` · ${Math.floor(c.dur / 60)}:${String(c.dur % 60).padStart(2, "0")}` : c.result && !c.missed ? " · " + c.result : ""}`;
+    const li = chatRow(id, what);
+    li.dataset.id = id;
+    if (c.missed) li.classList.add("missed");
+    const again = document.createElement("button");
+    again.className = "icon";
+    again.title = "Call back";
+    again.textContent = c.video ? "🎥" : "📞";
+    again.onclick = (e) => {
+      e.stopPropagation();
+      if (c.group) GroupCall.start(c.group, !!c.video); else startCall(c.peer, !!c.video);
+    };
+    li.appendChild(again);
+    results.appendChild(li);
   }
 }
 
@@ -2320,6 +2568,7 @@ async function importBackup(file) {
     const profile = await api(`/api/user/${data.username}`);
     if (profile.sigPub.x !== data.sigPub.x || profile.sigPub.y !== data.sigPub.y) throw new Error();
     const { freemessenger, ...identity } = data;
+    identity.username = profile.username || identity.username;
     me = identity;
     store.set("identity", me);
     store.set("backedUp", true);
@@ -2339,6 +2588,18 @@ function start() {
   applyFlags();
   refreshProfile(me.username, true);
   Admin.init({ conn: () => conn, me: () => me, toast });
+  GroupCall.init({
+    me: () => me.username,
+    send: (to, payload) => sendPayload(to, payload, true),
+    members: (gid) => recipients("g:" + gid),
+    title: (gid) => chatTitle("g:" + gid),
+    name: shortName,
+    ice: getIceServers,
+    media: getMedia,
+    toast,
+    log: logCall,
+    ring: (on) => (on ? startRinging(true) : stopRinging()),
+  });
   Browser.init({ conn: () => conn, toast });
   if (!store.get("privacyNotice4", false)) openDialog($("privacy-dialog"));
   $("backup-banner").hidden = store.get("backedUp", false);
@@ -2349,6 +2610,7 @@ function start() {
   connect();
   Push.init({ username: me.username, onOpenChat: (id) => chats[id] && openChat(id) });
   const hash = location.hash.slice(1).toLowerCase();
+  if (handleJoinLink(hash)) return;
   if (USERNAME.test(hash) && hash !== me.username) openContact(hash);
 }
 
@@ -2458,8 +2720,10 @@ $("chat-search-close").onclick = () => {
 };
 
 $("back-btn").onclick = closeChat;
-$("voice-btn").onclick = () => active && !isGroup(active) && startCall(active, false);
-$("video-btn").onclick = () => active && !isGroup(active) && startCall(active, true);
+$("voice-btn").onclick = () => active && (isGroup(active) ? GroupCall.start(active.slice(2), false) : startCall(active, false));
+$("video-btn").onclick = () => active && (isGroup(active) ? GroupCall.start(active.slice(2), true) : startCall(active, true));
+$("calls-btn").onclick = showCalls;
+$("rename-btn").onclick = changeUsername;
 $("accept-btn").onclick = acceptCall;
 $("hangup-btn").onclick = () => endCall(true);
 $("mute-btn").onclick = () => {
@@ -2551,6 +2815,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("hashchange", () => {
   const hash = location.hash.slice(1).toLowerCase();
+  if (me && handleJoinLink(hash)) return;
   if (me && USERNAME.test(hash) && hash !== me.username) openContact(hash);
 });
 

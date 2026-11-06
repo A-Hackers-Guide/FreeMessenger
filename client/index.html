@@ -65,6 +65,7 @@
           <button id="new-group-btn">New group</button>
           <button id="browser-btn" hidden>Web viewer</button>
           <button id="starred-btn">Starred messages</button>
+          <button id="calls-btn">Call history</button>
           <button id="settings-btn">Settings</button>
           <button id="admin-btn" hidden>Admin panel</button>
           <button id="backup-btn">Download backup</button>
@@ -180,6 +181,22 @@
     </div>
   </div>
 
+  <div id="gcall" class="gcall" hidden>
+    <div class="gcall-head"><strong id="gcall-title"></strong><span id="gcall-status"></span></div>
+    <div id="gcall-grid" class="gcall-grid"></div>
+    <div class="call-controls">
+      <button id="gcall-mute" class="round">Mute</button>
+      <button id="gcall-cam" class="round">Camera off</button>
+      <button id="gcall-screen" class="round">Share screen</button>
+      <button id="gcall-leave" class="hangup">Leave</button>
+    </div>
+  </div>
+
+  <div id="gcall-invite" class="gcall-invite" hidden>
+    <span id="gcall-invite-text"></span>
+    <div class="row"><button id="gcall-ignore" class="ghost small">Ignore</button><button id="gcall-join" class="primary small">Join</button></div>
+  </div>
+
   <dialog id="safety-dialog">
     <h2>Verify encryption with <span id="safety-peer"></span></h2>
     <p>Compare this code with your friend in person or on a call. If yours match, nobody swapped keys between you. (The site admin can still read messages through the admin copy.)</p>
@@ -216,6 +233,7 @@
     <label class="setting"><span>Notifications</span><button type="button" id="notify-btn" class="ghost small">Turn on</button></label>
     <label class="setting"><span>Save a copy of all my chats</span><button type="button" id="export-btn" class="ghost small">Export</button></label>
     <label class="setting"><span>Get my old messages from the server (for a new browser)</span><button type="button" id="history-btn" class="ghost small">Download</button></label>
+    <label class="setting"><span>Change my username (once a month)</span><button type="button" id="rename-btn" class="ghost small">Change</button></label>
     <h3 class="settings-head">Look</h3>
     <label class="setting"><span>Theme</span><select id="set-preset"></select></label>
     <label class="setting"><span>Accent color</span><input type="color" id="set-accent"></label>

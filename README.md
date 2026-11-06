@@ -85,7 +85,7 @@ Notifications only say who wrote to you. The message itself stays encrypted unti
 - Allow the camera and microphone when your browser asks.
 - Both people need to have FreeMessenger open. You can't call someone who's offline.
 - Some strict networks (work, school, some mobile carriers) block direct calls. Try another Wi-Fi or mobile data.
-- Calls are one-to-one for now. Groups can text, share and send voice messages, but not call.
+- Group calls work best with a few people: each person sends their audio and video to everyone else.
 
 ### Which browsers and networks does it work on?
 Texting works in any browser from about 2017 on (Chrome, Firefox, Safari, Edge, Samsung Internet, Opera, Brave and others), including:

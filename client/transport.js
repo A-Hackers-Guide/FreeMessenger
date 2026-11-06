@@ -68,7 +68,7 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
         setReady(true);
       } else if (msg.type === "message") {
         onMessage(msg);
-      } else if (msg.type === "announce") {
+      } else if (msg.type === "announce" || msg.type === "mirror") {
         if (onEvent) onEvent(msg);
       } else if (msg.type === "error" && msg.error && /banned/i.test(msg.error)) {
         stopped = true;

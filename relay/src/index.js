@@ -52,6 +52,7 @@ export default {
       // Invite codes and approvals live on the home PC, so only open sign-ups work here.
       const cfg = await (await registry(env).fetch("https://do/config")).json();
       if (cfg.signupMode && cfg.signupMode !== "open") return json({ error: "Sign-ups are paused while the main server is off. Try again later." }, 403);
+      if ((await (await registry(env).fetch("https://do/old-name?n=" + name)).json()).taken) return json({ error: "That username is taken" }, 409);
       return post(userStub(env, name), "/register", { username: name, sigPub: body.sigPub, ecdhPub: body.ecdhPub, ip: ipOf(request) }).then(withCors);
     }
 
@@ -144,7 +145,7 @@ async function sync(request, env) {
   if (!body) return json({ error: "bad signature" }, 403);
 
   const reg = registry(env);
-  await post(reg, "/set", { primary: body.primary, admins: body.admins, turn: body.turn, signupMode: body.signupMode });
+  await post(reg, "/set", { primary: body.primary, admins: body.admins, turn: body.turn, signupMode: body.signupMode, oldNames: body.oldNames });
   let calls = 1;
 
   // Everything for one user goes in one call to their Durable Object.
@@ -219,12 +220,17 @@ export class User {
       // A home PC that hasn't checked in for 2 minutes is treated as off.
       return json(p && Date.now() - p.ts < 120e3 ? { url: p.url } : {});
     }
+    if (url.pathname === "/old-name") return json({ taken: !!(await s.get("o:" + url.searchParams.get("n"))) });
     if (url.pathname === "/config") return json({ admins: (await s.get("admins")) || [], turn: await s.get("turn"), signupMode: (await s.get("signupMode")) || "open" });
     const body = JSON.parse(await request.text() || "{}");
     if (url.pathname === "/set") {
       if (typeof body.primary === "string" && /^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1):\d+)$/i.test(body.primary)) await s.put("primary", { url: body.primary, ts: Date.now() });
       if (Array.isArray(body.admins)) await s.put("admins", body.admins.filter((n) => USERNAME.test(n)).slice(0, 10));
       if (["open", "approval", "invite", "closed"].includes(body.signupMode)) await s.put("signupMode", body.signupMode);
+      if (Array.isArray(body.oldNames)) {
+        const names = body.oldNames.filter((n) => USERNAME.test(n));
+        for (let i = 0; i < names.length; i += 128) await s.put(Object.fromEntries(names.slice(i, i + 128).map((n) => ["o:" + n, 1])));
+      }
       if (body.turn && typeof body.turn === "object") await s.put("turn", body.turn); else if (body.turn === null) await s.delete("turn");
       return json({ ok: true });
     }
@@ -253,7 +259,7 @@ export class User {
   async fetch(request) {
     const url = new URL(request.url);
     // Only the registry instance is ever sent these.
-    if (["/primary", "/config", "/set", "/mark", "/take-dirty"].includes(url.pathname)) return this.registryFetch(url, request);
+    if (["/primary", "/config", "/set", "/mark", "/take-dirty", "/old-name"].includes(url.pathname)) return this.registryFetch(url, request);
 
     if (url.pathname === "/register") {
       const { username, sigPub, ecdhPub, ip } = JSON.parse(await request.text());
