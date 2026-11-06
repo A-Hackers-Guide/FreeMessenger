@@ -482,7 +482,7 @@ const server = http.createServer(async (req, res) => {
       return v ? reply(res, 200, { key: v.publicKey }) : reply(res, 503, { error: "not ready" });
     }
     if (url.pathname === "/api/admin-key") {
-      const a = ADMINS[0] && getAccount(ADMINS[0]);
+      const a = ADMINS[0] && (await ensureAccount(ADMINS[0]));
       return reply(res, 200, a ? { ecdhPub: JSON.parse(a.ecdhPub) } : {});
     }
     if (url.pathname === "/api/ice") {
@@ -626,7 +626,8 @@ function startTunnel() {
 
 async function refreshPublicIp() {
   try {
-    const text = await (await fetch("https://cloudflare.com/cdn-cgi/trace", { signal: AbortSignal.timeout(8000) })).text();
+    // 1.1.1.1 only answers over IPv4, which is what the TURN server listens on.
+    const text = await (await fetch("https://1.1.1.1/cdn-cgi/trace", { signal: AbortSignal.timeout(8000) })).text();
     const m = text.match(/^ip=(.+)$/m);
     if (m) publicIp = m[1].trim();
   } catch {}
