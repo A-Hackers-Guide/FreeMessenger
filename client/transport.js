@@ -25,7 +25,8 @@ export function request(url, body, timeout = 20000) {
   });
 }
 
-export function createConnection({ relay, username, sign, store, onMessage, onState, onFatal }) {
+export function createConnection({ relay, username, sign, store, onMessage, onState, onFatal, onFlags }) {
+  const flagsFrom = (m) => ({ admin: !!m.admin, proxy: !!m.proxy, primary: !!m.primary });
   let mode = null;
   let stopped = false;
   let ready = false;
@@ -58,12 +59,16 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
         ws.send(JSON.stringify({ type: "auth", signature: await sign(msg.challenge) }));
       } else if (msg.type === "ready") {
         signedIn = true;
+        if (onFlags) onFlags(flagsFrom(msg));
         clearTimeout(timer);
         wsRetry = wsFailures = 0;
         store.set("transport", null);
         setReady(true);
       } else if (msg.type === "message") {
         onMessage(msg);
+      } else if (msg.type === "error" && msg.error && /banned/i.test(msg.error)) {
+        stopped = true;
+        onFatal(msg.error);
       } else if (msg.type === "sent") {
         const resolve = pending.get(msg.ref);
         pending.delete(msg.ref);
@@ -77,10 +82,11 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
       for (const resolve of pending.values()) resolve({ error: "offline" });
       pending.clear();
       if (ev.code === 4001) return onFatal();
+      if (ev.code === 4003) { stopped = true; return onFatal(ev.reason === "removed" ? "This account was removed by the admin." : "This account has been banned."); }
       if (stopped) return;
       // Never got signed in twice in a row: something on the way blocks WebSockets.
       if (!signedIn && ++wsFailures >= 2) return fallBack();
-      setTimeout(startWs, Math.min(30000, 1000 * 2 ** wsRetry++));
+      setTimeout(() => { if (!stopped) startWs(); }, Math.min(30000, 1000 * 2 ** wsRetry++));
     };
   }
 
@@ -123,14 +129,16 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
       setReady(false);
       throw new Error("session");
     }
-    if (r.status === 403) { stopped = true; onFatal(); throw new Error("auth"); }
+    if (r.status === 403) { stopped = true; onFatal(r.data && r.data.error !== "auth failed" ? r.data.error : undefined); throw new Error("auth"); }
     if (!r.ok) throw new Error(r.data.error || "relay " + r.status);
     return r.data;
   }
 
   async function signIn() {
     const { challenge } = await call("challenge", {});
-    token = (await call("auth", { challenge, signature: await sign(challenge) })).token;
+    const r = await call("auth", { challenge, signature: await sign(challenge) });
+    token = r.token;
+    if (onFlags) onFlags(flagsFrom(r));
   }
 
   async function poll() {
@@ -184,8 +192,21 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
 
   // hint tells the relay whether to send a notification if the other person
   // is offline: "msg" for messages, "call" for calls, nothing for the rest.
-  function send(to, body, ephemeral, hint) {
-    return op("send", { to, body, ephemeral: !!ephemeral, hint });
+  function send(to, body, ephemeral, hint, extra) {
+    return op("send", Object.assign({ to, body, ephemeral: !!ephemeral, hint }, extra));
+  }
+
+  // Stops this connection for good (the app is switching relays).
+  function close() {
+    stopped = true;
+    setReady(false);
+    mode = "closed";
+    clearTimeout(pollTimer);
+    if (ws) {
+      ws.onclose = ws.onmessage = null;
+      try { ws.close(); } catch {}
+      ws = null;
+    }
   }
 
   // Any request to the relay, over whichever connection is up.
@@ -213,6 +234,8 @@ export function createConnection({ relay, username, sign, store, onMessage, onSt
   else startWs();
 
   return {
+    relay,
+    close,
     send,
     op,
     ack,

@@ -30,8 +30,11 @@ Your friend does the same thing in their own browser. That's it.
 | ⏱ **Disappearing messages** | Messages delete themselves after 1 hour, 1 day, 1 week or 30 days |
 | 🔔 **Notifications** | Even when the site is closed (on iPhone and iPad, install the app first) |
 | 📲 **Install it** | ⋯ → **Install app** puts it on your home screen or desktop. It opens even when you're offline. |
-| 🔎 **Find things** | Search all chats, or one chat. Nicknames, mute, block and clear history are in each chat's ⋮ menu. |
-| ⚙️ **Make it yours** | Light or dark theme, four text sizes, choose what Enter does, and turn read receipts or typing off |
+| 🙂 **Profiles** | A profile picture, display name, real name, status and "about" text (⋯ → **My profile**). Tap someone's name in a chat to see theirs. |
+| 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute, block and clear history are in each chat's ⋮ menu. |
+| 🎨 **Make it yours** | Ready-made themes, an accent color, and a color, gradient or picture for each bar. Every chat can have its own background and animation (aurora, bubbles, stars, snow, hearts, waves, rain, confetti). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
+| 🗂 **Your history anywhere** | Messages are kept on the server, so a new browser can download your old chats (Settings → **Get my old messages**). |
+| 🌐 **Web viewer** | For people the admin allows: open links through the server in a safe viewer with scripts turned off. |
 
 Tap any message for its options (react, reply, copy, edit, delete).
 
@@ -45,11 +48,14 @@ Tap any message for its options (react, reply, copy, edit, delete).
 Yes. There are no ads, subscriptions or paid features. It runs on the free tiers of GitHub Pages and Cloudflare.
 
 ### Is it private?
-Messages and call setup are **end-to-end encrypted**. They're scrambled in your browser before they're sent, and only your friend's browser can unscramble them. The relay server that passes messages along can't read them.
+Partly, and here's exactly how:
 
-To double-check, open a chat and tap **Verify encryption**. You'll see a 12-digit code. Compare it with your friend in person or on a call. If the codes match, nobody is listening in.
+- Messages are **encrypted in your browser** before they're sent. The servers that pass them along can't read them.
+- **But the site's admin can.** Every saved message also carries an "admin copy", encrypted for the admin, so they can check for illegal content in the admin panel. You're told this when you sign up.
+- The admin can also see account details (username, profile, when you joined and were last online) and **IP addresses**, and can freeze, time out, ban or remove accounts.
+- Typing indicators and call audio and video are never saved. Voice and video go directly between your browser and your friend's whenever possible.
 
-Voice and video go directly between your browser and your friend's whenever possible.
+**Verify encryption** in a chat shows a 12-digit code. If it matches your friend's, nobody swapped keys between you. It doesn't stop the admin copy.
 
 ### What is the backup file?
 Your account isn't stored on a server. It lives in your browser as a pair of secret keys. The backup file is a copy of those keys.
@@ -61,9 +67,9 @@ Use it to:
 > ⚠️ **Keep it safe and don't share it.** Anyone with the file can use your account. If you lose both your browser data and the backup file, **the account can't be recovered**. No one can reset it, not even us.
 
 ### Where are my messages saved?
-In your browser on your device. Messages sent while you're offline wait on the relay, still encrypted, for up to 30 days. Once your browser receives them, they're deleted from the relay.
+In your browser, and on the main server, which keeps every message (encrypted) with no limit except its disk space. On a new device, restore your backup, then use **Settings → Get my old messages** to download your texts. Photos and files aren't downloaded again.
 
-Restoring a backup on a new device brings back your **account**, not your old chat history.
+The main server runs on the site owner's computer. When it's off, a backup server on Cloudflare takes over and holds messages for up to 30 days, and the two copy everything to each other when the main one comes back.
 
 ### Will I get notified about new messages?
 Yes, even when FreeMessenger is closed. Go to **⋯ → Settings → Notifications** and allow them. On iPhone and iPad, first install the app (Share → Add to Home Screen) and turn them on from there; Apple only allows notifications for installed web apps.
@@ -84,7 +90,7 @@ Texting works in any browser from about 2017 on (Chrome, Firefox, Safari, Edge, 
 Calls need a browser that supports WebRTC and an address that starts with `https://`. Tor Browser turns WebRTC off, so it can text but not call.
 
 ### What usernames can I pick?
-3 to 20 characters using `a–z`, `0–9` and `_`. Names are first come, first served, and once taken they can't be changed or released.
+3 to 20 characters using `a–z`, `0–9` and `_`. Names are first come, first served, and once taken they can't be changed. They only become free again if the admin removes the account.
 
 ### Can I use it on more than one device?
 Yes. Restore your backup file on each device. Each device keeps its own chat history, and messages that arrive while a device is offline may only show up on whichever device was online to receive them.
@@ -98,7 +104,8 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 | Message length | 8,000 characters |
 | Photos, videos, voice messages and files | Up to 10 MB each (photos are made smaller automatically) |
 | Group size | 32 people |
-| Messages waiting while you're offline | Up to 2,000 (a big file counts as many), kept for 30 days |
+| How often you can send | 1 message a second (a few quick ones in a row are fine; the app waits and sends the rest by itself) |
+| Saved messages | No limit while the main server is on. On the backup server: up to 5,000 waiting per person, for 30 days. |
 | Group calls | Not yet |
 | Phone (SMS/calling real numbers) | Not yet (see roadmap) |
 
@@ -110,9 +117,10 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 2. ✅ Works through proxies and filters, and in older browsers
 3. ✅ Photos, files, voice messages, groups, reactions, replies, read receipts, disappearing messages
 4. ✅ Installable app with notifications even when the site is closed
-5. Group calls
-6. Apps for Windows, macOS, Linux, Android and iOS
-7. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
+5. ✅ Profiles, themes, chat backgrounds and animations, server-side history, web viewer, admin panel
+6. Group calls
+7. Apps for Windows, macOS, Linux, Android and iOS
+8. Optional **broadcaster** app: send texts and make calls through your own phone line (Android phone, USB cell modem or SIP/VoIP), with plugins for different hardware
 
 ---
 
@@ -124,13 +132,18 @@ Yes. Restore your backup file on each device. Each device keeps its own chat his
 | Part | Folder | Runs on |
 |---|---|---|
 | Web app (plain HTML, CSS and JavaScript; the Deploy workflow bundles it for older browsers) | [`client/`](client/) | GitHub Pages |
-| Relay: username directory, sign-in check, message passing, offline inbox | [`relay/`](relay/) | Cloudflare Workers + Durable Objects (free plan) |
+| Main relay: accounts, message passing, every message saved in SQLite, admin panel, web viewer, TURN logins | [`server/`](server/) | The owner's PC (Node.js), reached through a free Cloudflare quick tunnel |
+| Backup relay: the same protocol, takes over when the main relay is off | [`relay/`](relay/) | Cloudflare Workers + Durable Objects (free plan) |
 
 - **Accounts:** each browser makes an ECDSA P-256 key pair (proves who you are to the relay) and an ECDH P-256 key pair (encryption). The relay stores only the public halves, one Durable Object per username.
 - **Sign-in:** when you connect, the relay sends a random challenge, and your browser signs it.
 - **Connection:** a WebSocket. If one isn't signed in within 8 seconds, or fails twice, the app switches to `POST /api/http/:name` requests (`text/plain`, so there's no CORS preflight) that poll every 1 to 15 seconds and work through almost any proxy. See [`client/transport.js`](client/transport.js).
 - **Browsers without WebCrypto** (plain `http://` pages, some older browsers) load [`@noble/curves`](https://github.com/paulmillr/noble-curves) and [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) instead. They produce the same keys, signatures and ciphertext, so both kinds of browser can talk to each other.
 - **Messages:** encrypted with AES-256-GCM using a key both people derive from ECDH. The relay sets the sender's name itself, so nobody can pretend to be someone else.
+- **Admin copy:** each saved message is also encrypted with ECDH between the sender and the admin account's public key (`/api/admin-key`). The main relay stores it; the admin panel ([`client/admin.js`](client/admin.js)) decrypts it in the admin's browser.
+- **Two relays:** the app asks the backup relay where the main one is (`/api/primary`, since the quick-tunnel address changes on restart) and uses it if it answers. Every 30 seconds the main relay calls the backup's `/api/sync`, signed with a key only the main relay has (`PRIMARY_KEY` in `wrangler.toml` is the public half). The sync copies accounts, profiles, moderation, push subscriptions and messages both ways.
+- **Send limit:** 1 chat message a second per person (a burst of 5), counted once per message even in groups. File pieces, receipts and typing have a much larger allowance.
+- **Web viewer:** [`server/proxy.js`](server/proxy.js) fetches pages for allowed accounts, refuses private and local network addresses (checked on the address it actually connects to), strips scripts, frames and event handlers, routes links and pictures back through itself, and serves everything with a `sandbox` Content-Security-Policy.
 - **Calls:** WebRTC. The relay only passes the encrypted call setup between the two browsers.
 - **Files:** split into 32 KB pieces, each encrypted like a message ([`client/files.js`](client/files.js)). Pieces are acknowledged only once the whole file has arrived, so a reload resumes the transfer.
 - **Groups:** no server-side groups. The sender encrypts a copy for each member, and group changes (create, rename, add, leave) are messages too.
@@ -161,6 +174,21 @@ Open `http://localhost:8080` in one browser and `http://127.0.0.1:8080` in anoth
 </details>
 
 <details>
+<summary><strong>Run the main relay on your own PC</strong></summary>
+
+Needs Node.js 22.13 or newer and, for the TURN server, Docker Desktop. On Windows, one command does everything (copies the relay, makes its keys, starts the TURN server and sets the relay to start when you sign in):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File server\install.ps1 -Admin yourname
+```
+
+Then put the `PRIMARY_KEY=…` line it prints into `relay/wrangler.toml` under `[vars]` and redeploy the backup relay. For calls through strict networks, forward UDP and TCP 3478 and UDP 49160–49200 on your router to the PC.
+
+On other systems: `cd server && npm ci && node setup.mjs data --admin yourname --cloudflared "$(which cloudflared)" && node server.js data`.
+
+</details>
+
+<details>
 <summary><strong>Host your own copy</strong></summary>
 
 1. Fork this repo.
@@ -184,7 +212,7 @@ Optional:
 
 - The web app has zero libraries, so there's nothing to update.
 - The relay is pinned to a fixed Cloudflare compatibility date, which Cloudflare keeps working.
-- Offline messages are capped and expire, so storage can't grow forever.
+- On the backup relay, offline messages are capped and expire. The main relay has a storage cap (100 GB by default) and removes the oldest file pieces first when it's nearly full.
 - Keep-alive pings are answered without waking the relay, which keeps usage inside the free tier.
 
 </details>

@@ -1,11 +1,14 @@
 import "./compat.js";
-import { RELAY_URL } from "./config.js";
 import * as E2E from "./crypto.js";
 import { uuid, clear, readFileText, openDialog, closeDialog, copyText, AudioCtx, canCall } from "./compat.js";
 import { request, createConnection } from "./transport.js";
 import { store, files } from "./store.js";
 import * as F from "./files.js";
 import * as Push from "./push.js";
+import * as Relays from "./relays.js";
+import * as Look from "./look.js";
+import * as Admin from "./admin.js";
+import * as Browser from "./browser.js";
 
 window.FM_LOADED = true;
 
@@ -31,7 +34,7 @@ let chats = store.get("chats", null);
 let peers = store.get("peers", {});
 let outbox = store.get("outbox", []);
 const settings = Object.assign(
-  { theme: "system", size: "normal", enterSends: true, readReceipts: true, typing: true },
+  { theme: "system", size: "normal", enterSends: true, readReceipts: true, typing: true, look: {} },
   store.get("settings", {}),
 );
 
@@ -46,6 +49,17 @@ if (!chats) {
   store.set("chats", chats);
   store.set("peers", peers);
 }
+
+// Public profiles (display name, picture, status…), refreshed every 10 minutes.
+let profiles = store.get("profiles", {});
+const PROFILE_TTL = 10 * 60e3;
+const profileOf = (name) => (profiles[name] && profiles[name].p) || {};
+function rememberProfile(name, p) {
+  profiles[name] = { p: p || {}, at: Date.now() };
+  store.set("profiles", profiles);
+}
+// What the relay says this account may do (admin panel, web viewer).
+let flags = store.get("flags", { admin: false, proxy: false, primary: false });
 
 let active = null;
 const isGroup = (id) => id.slice(0, 2) === "g:";
@@ -65,15 +79,16 @@ const findMessage = (id, mid) => loadChat(id).find((m) => m.mid === mid);
 function chatTitle(id) {
   const c = chats[id] || {};
   if (isGroup(id)) return c.name || "Group";
-  return c.nickname ? `${c.nickname} (@${id})` : "@" + id;
+  const shown = c.nickname || profileOf(id).display;
+  return shown ? `${shown} (@${id})` : "@" + id;
 }
-const shortName = (name) => (chats[name] && chats[name].nickname) || "@" + name;
+const shortName = (name) => (chats[name] && chats[name].nickname) || profileOf(name).display || "@" + name;
 
 // ---------- relay ----------
 
 async function api(path, body) {
   let r;
-  try { r = await request(RELAY_URL + path, body); } catch { throw new Error("Can't reach the relay. Check your connection."); }
+  try { r = await request(Relays.get() + path, body); } catch { throw new Error("Can't reach the relay. Check your connection."); }
   if (!r.ok) throw Object.assign(new Error(r.data.error || `Relay error ${r.status}`), { status: r.status });
   return r.data;
 }
@@ -83,39 +98,112 @@ async function getKey(name) {
   const p = await api(`/api/user/${name}`);
   peers[name] = p.ecdhPub;
   savePeers();
+  rememberProfile(name, p.profile);
   return peers[name];
 }
 
-let conn = null;
+// Fetches someone's profile again if it's old; redraws what shows it.
+const loadingProfiles = new Set();
+function refreshProfile(name, force) {
+  if (!USERNAME.test(name) || loadingProfiles.has(name)) return;
+  const known = profiles[name];
+  if (!force && known && Date.now() - known.at < PROFILE_TTL) return;
+  loadingProfiles.add(name);
+  api(`/api/user/${name}`).then((p) => {
+    rememberProfile(name, p.profile);
+    renderChats();
+    if (active === name) renderHeader();
+  }).catch(() => {}).finally(() => loadingProfiles.delete(name));
+}
 
-function connect() {
-  conn = createConnection({
-    relay: RELAY_URL,
+let conn = null;
+let adminKey = store.get("adminKey", null);
+let offlineSince = 0;
+
+async function connect() {
+  if (conn) conn.close();
+  conn = null;
+  const relay = await Relays.pick();
+  iceServers = null;
+  try {
+    const k = await api("/api/admin-key");
+    adminKey = k && k.ecdhPub ? k : null;
+    store.set("adminKey", adminKey);
+  } catch {}
+  const c = createConnection({
+    relay,
     username: me.username,
     sign: (challenge) => E2E.signChallenge(me, challenge),
     store,
     onMessage: handleIncoming,
     onState: (on, mode) => {
+      if (conn !== c) return;
       setConnected(on, mode);
+      offlineSince = on ? 0 : Date.now();
       if (on) {
         flushOutbox();
         Push.refresh(conn);
       }
     },
-    onFatal: () => toast("This browser's keys don't match your account. Restore your backup file."),
+    onFlags: (f) => {
+      flags = f;
+      store.set("flags", flags);
+      applyFlags();
+    },
+    onFatal: (message) => toast(message || "This browser's keys don't match your account. Restore your backup file."),
   });
+  conn = c;
+}
+
+// Moves to the home server when it comes back, and to the backup relay when
+// the home server stops answering.
+let switching = false;
+setInterval(async () => {
+  if (!me || !conn || switching) return;
+  const stuck = offlineSince && Date.now() - offlineSince > 15e3;
+  if (!stuck && Relays.onPrimary()) return;
+  switching = true;
+  try {
+    const before = conn.relay;
+    const now = await Relays.pick();
+    if (now !== before || stuck) await connect();
+  } finally {
+    switching = false;
+  }
+}, 20e3);
+
+function applyFlags() {
+  $("admin-btn").hidden = !flags.admin;
+  $("browser-btn").hidden = !flags.proxy;
 }
 
 const online = () => !!(conn && conn.ready);
-const sendRaw = (to, body, ephemeral, hint) => conn ? conn.send(to, body, ephemeral, hint) : Promise.resolve({ error: "offline" });
+const sendRaw = (to, body, ephemeral, hint, extra) => conn ? conn.send(to, body, ephemeral, hint, extra) : Promise.resolve({ error: "offline" });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let lastBlockedToast = 0;
 
 // Messages people should hear about wake the other person's device; edits,
 // receipts, file pieces and typing don't.
 const pushHint = (p) => (p.kind === "text" || p.kind === "file" || (p.kind === "group" && p.op === "create") ? "msg" : p.kind === "call-offer" ? "call" : undefined);
 
+// Every saved message also carries an "admin copy", encrypted for the site
+// admin, who can read it in the admin panel (people are told this when they
+// sign up). Typing and call setup aren't saved, so they don't get one.
 async function sendPayload(to, payload, ephemeral = false) {
   try {
-    return await sendRaw(to, await E2E.encrypt(me, await getKey(to), payload), ephemeral, pushHint(payload));
+    const body = await E2E.encrypt(me, await getKey(to), payload);
+    const extra = {};
+    if (!ephemeral) {
+      if (adminKey) extra.escrow = await E2E.encrypt(me, adminKey.ecdhPub, payload);
+      const k = payload.kind === "chunk" ? "chunk" : payload.kind === "text" || payload.kind === "file" ? "msg" : "control";
+      extra.meta = { k, fid: payload.fid, i: payload.i, n: payload.n, mid: payload.mid };
+    }
+    for (let tries = 0; ; tries++) {
+      const r = await sendRaw(to, body, ephemeral, pushHint(payload), extra);
+      if (r.slow && tries < 20) { await sleep(1100); continue; }
+      if (r.blocked && Date.now() - lastBlockedToast > 10e3) { lastBlockedToast = Date.now(); toast(r.error); }
+      return r;
+    }
   } catch (e) {
     return { error: e.message };
   }
@@ -634,8 +722,8 @@ function chatRow(id, snippet) {
   li.innerHTML = `<span class="avatar"></span><span class="meta"><strong></strong><small></small></span><span class="badge"></span>`;
   const title = chatTitle(id);
   const avatar = li.querySelector(".avatar");
-  avatar.textContent = isGroup(id) ? (title[0] || "G").toUpperCase() : (c.nickname || id)[0].toUpperCase();
-  if (isGroup(id)) avatar.classList.add("group");
+  fillAvatar(avatar, id);
+  if (!isGroup(id)) refreshProfile(id);
   li.querySelector("strong").textContent = title + (c.muted ? " 🔕" : "") + (c.blocked ? " (blocked)" : "");
   li.querySelector("small").textContent = snippet || c.preview || "";
   const badge = li.querySelector(".badge");
@@ -648,7 +736,27 @@ $("contacts").onclick = $("results").onclick = (e) => {
   if (li && li.dataset.id) openChat(li.dataset.id, { highlight: li.dataset.mid });
 };
 
+function fillAvatar(el, id) {
+  clear(el);
+  const c = chats[id] || {};
+  if (isGroup(id)) {
+    el.classList.add("group");
+    el.textContent = (chatTitle(id)[0] || "G").toUpperCase();
+    return;
+  }
+  const p = profileOf(id);
+  if (p.avatar) {
+    const img = document.createElement("img");
+    img.src = p.avatar;
+    img.alt = "";
+    el.appendChild(img);
+  } else {
+    el.textContent = (c.nickname || p.display || id)[0].toUpperCase();
+  }
+}
+
 // Links in messages open in a new tab; everything else is plain text.
+// People with the web viewer also get a button to open them there.
 function linkify(el, text) {
   const re = /\b(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]])/gi;
   let last = 0;
@@ -661,6 +769,15 @@ function linkify(el, text) {
     a.target = "_blank";
     a.rel = "noopener noreferrer nofollow";
     el.appendChild(a);
+    if (flags.proxy) {
+      const v = document.createElement("button");
+      v.className = "view-link";
+      v.textContent = "View";
+      v.title = "Open in the web viewer";
+      const url = match[1];
+      v.onclick = (e) => { e.stopPropagation(); Browser.open(url); };
+      el.appendChild(v);
+    }
     last = match.index + match[1].length;
   }
   if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
@@ -694,6 +811,11 @@ function renderFile(id, m, bubble) {
   const box = document.createElement("div");
   box.className = "file";
   bubble.appendChild(box);
+  if (f.missing) {
+    box.classList.add("loading");
+    box.textContent = `${f.voice ? "Voice message" : f.name} — not saved in this browser`;
+    return;
+  }
   if (!f.ready) {
     const p = m.mine ? null : F.progress(f.fid);
     box.classList.add("loading");
@@ -862,6 +984,10 @@ function renderHeader() {
   const c = chats[active] || {};
   const group = isGroup(active);
   $("peer-name").textContent = chatTitle(active);
+  fillAvatar($("peer-avatar"), active);
+  const status = group ? "" : profileOf(active).status || "";
+  $("peer-status").textContent = status;
+  $("peer-status").hidden = !status;
   $("voice-btn").hidden = $("video-btn").hidden = group || !!c.blocked;
   $("safety-btn").hidden = group;
   $("members-btn").hidden = !group;
@@ -883,6 +1009,8 @@ function openChat(id, opts = {}) {
   $("empty").hidden = true;
   $("convo").hidden = false;
   renderHeader();
+  applyChatLook(id);
+  if (!isGroup(id)) refreshProfile(id);
   const list = $("messages");
   clear(list);
   delete list.dataset.day;
@@ -1217,10 +1345,13 @@ function mainChatMenu() {
   const id = active;
   const c = chats[id];
   const group = isGroup(id);
-  const items = [["Search in this chat", () => {
+  const items = [];
+  if (!group) items.push(["View profile", () => openProfile(id)]);
+  items.push(["Background and animation", () => editChatLook(id)]);
+  items.push(["Search in this chat", () => {
     $("chat-search-bar").hidden = false;
     $("chat-search").focus();
-  }]];
+  }]);
   if (!(group && c.left) && !c.blocked) {
     const current = (TTL_CHOICES.find((x) => x[0] === (c.ttl || 0)) || [0, "Off"])[1];
     items.push([`Disappearing messages: ${current}`, () => TTL_CHOICES.map(([ttl, label]) =>
@@ -1246,7 +1377,7 @@ function mainChatMenu() {
       items.push(["Leave group", () => { if (confirm(`Leave "${c.name}"?`)) leaveGroup(id); }, "danger-text"]);
     }
   } else {
-    items.push(["Set a nickname", () => {
+    items.push(["Rename this chat (only you see it)", () => {
       const nick = prompt(`Nickname for @${id} (only you see it):`, c.nickname || "");
       if (nick === null) return;
       c.nickname = nick.trim().slice(0, 40) || undefined;
@@ -1338,7 +1469,7 @@ let iceServers = null;
 
 async function getIceServers() {
   if (!iceServers) {
-    try { iceServers = (await api("/api/ice")).iceServers; } catch { iceServers = [{ urls: "stun:stun.cloudflare.com:3478" }]; }
+    try { iceServers = (await api(`/api/ice?u=${me.username}`)).iceServers; } catch { iceServers = [{ urls: "stun:stun.cloudflare.com:3478" }]; }
   }
   return iceServers;
 }
@@ -1644,8 +1775,244 @@ function applySettings() {
   const root = document.documentElement;
   if (settings.theme === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", settings.theme);
   root.setAttribute("data-size", settings.size);
+  Look.applyLook(settings.look || {});
+  if (active) applyChatLook(active);
 }
 applySettings();
+
+// ---------- look: bars, chat backgrounds, animations ----------
+
+function applyChatLook(id) {
+  const c = chats[id] || {};
+  Look.applyChat(c.look ? Object.assign({ key: id }, c.look) : null, settings.look || {});
+}
+
+function editChatLook(id) {
+  const c = chats[id];
+  const own = c.look || {};
+  Look.editStyle({
+    title: `Background for ${chatTitle(id)}`,
+    style: own.bg,
+    key: "ui:chat:" + id,
+    withAnim: true,
+    anim: own.anim,
+    onChange: (bg, anim) => {
+      c.look = { bg, anim };
+      saveChats();
+      Look.forgetPicture("ui:chat:" + id);
+      applyChatLook(id);
+    },
+  });
+}
+
+function editBar(slot, label) {
+  const look = settings.look || (settings.look = {});
+  look.bars = look.bars || {};
+  Look.editStyle({
+    title: label,
+    style: look.bars[slot],
+    key: "ui:" + slot,
+    withText: true,
+    onChange: (style) => {
+      look.bars[slot] = style;
+      look.preset = "custom";
+      Look.forgetPicture("ui:" + slot);
+      store.set("settings", settings);
+      applySettings();
+    },
+  });
+}
+
+function editDefaultChat() {
+  const look = settings.look || (settings.look = {});
+  Look.editStyle({
+    title: "Background for all chats",
+    style: look.chat,
+    key: "ui:chat",
+    withAnim: "global",
+    anim: look.anim || "none",
+    onChange: (style, anim) => {
+      look.chat = style;
+      look.anim = anim === "default" ? "none" : anim;
+      look.preset = "custom";
+      Look.forgetPicture("ui:chat");
+      store.set("settings", settings);
+      applySettings();
+    },
+  });
+}
+
+function usePreset(name) {
+  const preset = Look.PRESETS[name];
+  if (!preset) return;
+  settings.look = JSON.parse(JSON.stringify(preset[1]));
+  settings.look.preset = name;
+  store.set("settings", settings);
+  applySettings();
+}
+
+function fillLookControls() {
+  const sel = $("set-preset");
+  if (!sel.options.length) {
+    for (const [k, [label]] of Object.entries(Look.PRESETS)) sel.appendChild(new Option(label, k));
+    sel.appendChild(new Option("Custom", "custom"));
+    const bars = $("set-bars");
+    for (const [slot, label] of Look.BARS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ghost small";
+      b.textContent = label;
+      b.onclick = () => editBar(slot, label);
+      bars.appendChild(b);
+    }
+    const all = document.createElement("button");
+    all.type = "button";
+    all.className = "ghost small";
+    all.textContent = "Background for all chats";
+    all.onclick = editDefaultChat;
+    bars.appendChild(all);
+  }
+  sel.value = (settings.look && settings.look.preset) || "default";
+  $("set-accent").value = (settings.look && settings.look.accent) || "#2f6fed";
+}
+
+$("set-preset").onchange = () => { if ($("set-preset").value !== "custom") usePreset($("set-preset").value); };
+$("set-accent").oninput = () => {
+  settings.look = settings.look || {};
+  settings.look.accent = $("set-accent").value;
+  settings.look.preset = "custom";
+  $("set-preset").value = "custom";
+  store.set("settings", settings);
+  applySettings();
+};
+
+// ---------- profiles ----------
+
+let profileFor = null;
+let pendingAvatar = undefined;
+
+function openProfile(name) {
+  profileFor = name;
+  const mine = name === me.username;
+  const p = mine ? Object.assign({}, store.get("myProfile", {}), profileOf(name)) : profileOf(name);
+  if (!mine) refreshProfile(name, true);
+  pendingAvatar = undefined;
+  $("profile-title").textContent = mine ? "Your profile" : chatTitle(name);
+  $("profile-user").textContent = "@" + name;
+  const pic = $("profile-pic");
+  clear(pic);
+  if (p.avatar) { const img = document.createElement("img"); img.src = p.avatar; img.alt = ""; pic.appendChild(img); }
+  else pic.textContent = (p.display || name)[0].toUpperCase();
+  for (const k of ["display", "real", "status", "bio"]) {
+    const input = $("profile-" + k);
+    input.value = p[k] || "";
+    input.readOnly = !mine;
+    input.closest("label").hidden = !mine && !p[k];
+  }
+  $("profile-pic-btn").hidden = $("profile-pic-remove").hidden = $("profile-save").hidden = !mine;
+  $("profile-note").hidden = !mine;
+  $("profile-error").textContent = "";
+  openDialog($("profile-dialog"));
+}
+
+$("profile-pic-btn").onclick = () => $("profile-pic-file").click();
+$("profile-pic-file").onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    pendingAvatar = await Look.squareDataUrl(file, 256, 80000);
+    const pic = $("profile-pic");
+    clear(pic);
+    const img = document.createElement("img");
+    img.src = pendingAvatar;
+    img.alt = "";
+    pic.appendChild(img);
+  } catch (err) {
+    $("profile-error").textContent = err.message;
+  }
+};
+$("profile-pic-remove").onclick = () => {
+  pendingAvatar = null;
+  const pic = $("profile-pic");
+  clear(pic);
+  pic.textContent = me.username[0].toUpperCase();
+};
+$("profile-close").onclick = () => closeDialog($("profile-dialog"));
+$("profile-save").onclick = async () => {
+  const old = Object.assign({}, store.get("myProfile", {}), profileOf(me.username));
+  const p = {};
+  for (const k of ["display", "real", "status", "bio"]) p[k] = $("profile-" + k).value.trim();
+  p.avatar = pendingAvatar === undefined ? old.avatar : pendingAvatar || undefined;
+  const r = conn && conn.ready ? await conn.op("profile", { profile: p }) : { error: "You're offline. Try again when you're connected." };
+  if (r.error) return ($("profile-error").textContent = r.error);
+  store.set("myProfile", p);
+  rememberProfile(me.username, p);
+  $("me-name").textContent = p.display ? `${p.display}` : "@" + me.username;
+  closeDialog($("profile-dialog"));
+  toast("Profile saved. Everyone sees it now.");
+};
+
+// ---------- your message history from the server ----------
+
+async function downloadHistory() {
+  if (!conn || !conn.ready) return toast("You're offline. Try again when you're connected.");
+  if (!Relays.onPrimary()) return toast("History is kept on the home server, which isn't on right now.");
+  const btn = $("history-btn");
+  btn.disabled = true;
+  const all = [];
+  try {
+    let before;
+    for (;;) {
+      btn.textContent = `Downloading… ${all.length}`;
+      const r = await conn.op("history", { before });
+      if (r.error) throw new Error(r.error);
+      all.push(...r.messages);
+      if (r.done || !r.messages.length) break;
+      before = r.messages[r.messages.length - 1].ts;
+    }
+    all.sort((a, b) => a.ts - b.ts);
+    let added = 0;
+    const touched = new Set();
+    for (const env of all) {
+      const mine = env.from === me.username;
+      let p;
+      try { p = await E2E.decrypt(me, await getKey(mine ? env.to : env.from), env.body); } catch { continue; }
+      if (p.kind === "group") {
+        if (!mine) handleGroupEvent(env.from, p, env.ts);
+        else if (p.op !== "leave" && p.gid && !chats["g:" + p.gid]) {
+          chats["g:" + p.gid] = { type: "group", name: String(p.name || "Group").slice(0, 60), members: cleanMembers(p.members), last: env.ts, unread: 0, preview: "" };
+          saveChats();
+        }
+        continue;
+      }
+      if (p.kind !== "text" && p.kind !== "file") continue;
+      const id = p.gid ? "g:" + p.gid : mine ? env.to : env.from;
+      if (findMessage(id, p.mid)) continue;
+      ensureChat(id);
+      const list = loadChat(id);
+      const m = { mid: p.mid, from: env.from, mine, text: String(p.text || "").slice(0, 8000), ts: env.ts };
+      if (mine) m.status = "sent";
+      if (p.kind === "file") m.file = { fid: String(p.fid), name: String(p.name || "file").slice(0, 200), type: String(p.type || ""), size: Number(p.size) || 0, n: Number(p.n) || 1, voice: !!p.voice, missing: true };
+      list.push(m);
+      list.sort((a, b) => a.ts - b.ts);
+      saveChat(id, list);
+      const c = chats[id];
+      if (env.ts >= (c.last || 0)) { c.last = env.ts; c.preview = (mine ? "You: " : "") + previewText(m); }
+      touched.add(id);
+      added++;
+    }
+    saveChats();
+    renderChats();
+    if (active && touched.has(active)) openChat(active, { keepScroll: true });
+    toast(added ? `Added ${added} messages from the server.` : "Everything was already here.");
+  } catch (e) {
+    toast(e.message || "Couldn't download your history.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Download";
+  }
+}
 
 function openSettings() {
   $("set-theme").value = settings.theme;
@@ -1654,6 +2021,7 @@ function openSettings() {
   $("set-receipts").checked = settings.readReceipts;
   $("set-typing").checked = settings.typing;
   $("notify-btn").textContent = Push.status();
+  fillLookControls();
   openDialog($("settings-dialog"));
 }
 
@@ -1726,7 +2094,13 @@ async function importBackup(file) {
 function start() {
   $("welcome").hidden = true;
   $("app").hidden = false;
-  $("me-name").textContent = "@" + me.username;
+  const mine = Object.assign({}, store.get("myProfile", {}), profileOf(me.username));
+  $("me-name").textContent = mine.display || "@" + me.username;
+  applyFlags();
+  refreshProfile(me.username, true);
+  Admin.init({ conn: () => conn, me: () => me, toast });
+  Browser.init({ conn: () => conn, toast });
+  if (!store.get("privacyNotice4", false)) openDialog($("privacy-dialog"));
   $("backup-banner").hidden = store.get("backedUp", false);
   renderChats();
   updateTitle();
@@ -1761,9 +2135,11 @@ $("signup-form").onsubmit = async (e) => {
   btn.disabled = true;
   try {
     const identity = await E2E.createIdentity(name);
+    await Relays.pick();
     await api("/api/register", { username: name, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub });
     me = identity;
     store.set("identity", me);
+    store.set("privacyNotice4", true);
     start();
   } catch (err) {
     $("signup-error").textContent = err.message;
@@ -1874,6 +2250,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   hideMessageMenu();
   $("menu").hidden = $("chat-menu").hidden = $("viewer").hidden = true;
+  if (!$("browser").hidden) $("browser-close").click();
 });
 window.addEventListener("resize", hideMessageMenu);
 $("messages").addEventListener("scroll", hideMessageMenu);
@@ -1889,6 +2266,12 @@ $("share-btn").onclick = async () => {
   toast("Link copied: " + link);
 };
 $("new-group-btn").onclick = () => openGroupDialog(null);
+$("profile-btn").onclick = () => openProfile(me.username);
+$("admin-btn").onclick = () => Admin.open();
+$("browser-btn").onclick = () => Browser.open();
+$("history-btn").onclick = downloadHistory;
+$("privacy-ok").onclick = () => { store.set("privacyNotice4", true); closeDialog($("privacy-dialog")); };
+$("peer-avatar").onclick = $("peer-name").onclick = () => active && (isGroup(active) ? openGroupDialog(active) : openProfile(active));
 $("settings-btn").onclick = openSettings;
 $("backup-btn").onclick = downloadBackup;
 $("banner-backup-btn").onclick = downloadBackup;
