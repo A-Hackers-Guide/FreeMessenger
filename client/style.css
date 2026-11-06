@@ -375,3 +375,5 @@ body.panel-open #app { visibility: hidden; }
 }
 .bar.styled .link { color: inherit; opacity: .85; text-decoration: underline; }
 .bar.styled .typing { color: inherit; }
+.admin-code { max-width: 320px; margin: 40px auto; display: grid; gap: 8px; text-align: center; }
+.code-input { font: 600 28px/1.2 ui-monospace, Menlo, monospace; letter-spacing: .3em; text-align: center; }

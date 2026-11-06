@@ -30,8 +30,33 @@ async function call(action, extra) {
   const conn = ctx.conn();
   if (!conn || !conn.ready) throw new Error("Not connected.");
   const r = await conn.op("admin", Object.assign({ action }, extra));
-  if (r.error) throw new Error(r.error);
+  if (r.error) throw Object.assign(new Error(r.error), { needCode: !!r.needCode });
   return r;
+}
+
+// The second step: a 6-digit code from the admin's authenticator app.
+function askCode(body, then) {
+  clear(body);
+  const input = el("input", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", class: "admin-filter code-input" });
+  const err = el("p", { class: "error", role: "alert" });
+  const form = el("form", { class: "admin-code" },
+    el("h3", {}, "Enter your admin code"),
+    el("p", { class: "hint" }, "Open your authenticator app and type the 6-digit code for FreeMessenger admin."),
+    input, err,
+    el("button", { type: "submit", class: "primary" }, "Unlock"));
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    try {
+      await call("unlock", { code: input.value.trim() });
+      then();
+    } catch (x) {
+      err.textContent = x.message;
+      input.select();
+    }
+  };
+  body.appendChild(form);
+  input.focus();
 }
 
 export function init(c) {
@@ -62,6 +87,7 @@ async function show(name, reload) {
     try {
       data = await call("overview");
     } catch (e) {
+      if (e.needCode) return askCode(body, () => show(name, true));
       clear(body);
       body.appendChild(el("p", { class: "error" }, e.message));
       return;
