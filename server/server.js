@@ -17,6 +17,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer } from "ws";
+import dgram from "node:dgram";
 import * as S from "../relay/src/shared.js";
 import { proxyPage, proxyResource, proxyAllowed, linkPreview } from "./proxy.js";
 
@@ -598,7 +599,7 @@ async function admin(me, msg) {
           messagesToday: q("SELECT COUNT(*) AS n FROM archive WHERE kind = 'msg' AND ts > ?").get(day).n,
           waiting: q("SELECT COUNT(*) AS n FROM queue").get().n,
           used, cap: CAP_BYTES,
-          backup: lastSync, tunnel: tunnelUrl, dbBackup: lastBackup,
+          backup: lastSync, tunnel: tunnelUrl, dbBackup: lastBackup, forwards, turnCheck,
           openReports: q("SELECT COUNT(*) AS n FROM reports WHERE status = 'open'").get().n,
           pending: q("SELECT COUNT(*) AS n FROM accounts WHERE status = 'pending'").get().n,
         },
@@ -686,7 +687,8 @@ async function admin(me, msg) {
     case "settings":
       return {
         signupMode: signupMode(),
-      oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)), defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
+      oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)),
+      checkTurn: !!(config.turn && publicIp) && Date.now() - lastTurnCheck > 30 * 60e3, defaultQuotaGB: kvGet("defaultQuotaGB", 5), watchWords: kvGet("watchWords", []),
         invites: q("SELECT * FROM invites ORDER BY created DESC").all(), backup: lastBackup, backupDir: BACKUP_DIR,
       };
     case "set-settings": {
@@ -1047,6 +1049,54 @@ function onSocket(ws, name, ip) {
   ws.on("error", () => {});
 }
 
+// ---------- router port forwards for TURN (NAT-PMP) ----------
+//
+// Asks the home router to forward the TURN ports to this computer, and keeps
+// asking every 30 minutes, so the forwards survive restarts of either one.
+// Uses NAT-PMP (RFC 6886), which routers offer to devices on their own
+// network; no router password is involved.
+
+let forwards = { ok: 0, failed: 0, ts: 0, error: "" };
+let turnCheck = null;      // what the backup relay saw when it tried TURN from outside
+let lastTurnCheck = 0;
+
+function natpmpMap(gateway, proto, port, lifetime) {
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket("udp4");
+    const req = Buffer.alloc(12);
+    req[1] = proto === "tcp" ? 2 : 1;
+    req.writeUInt16BE(port, 4);
+    req.writeUInt16BE(port, 6);
+    req.writeUInt32BE(lifetime, 8);
+    const done = (r) => { clearTimeout(timer); try { sock.close(); } catch {} resolve(r); };
+    const timer = setTimeout(() => done({ ok: false, error: "no reply" }), 2500);
+    sock.on("message", (m) => {
+      const result = m.length >= 16 ? m.readUInt16BE(2) : -1;
+      done(result === 0 && m.readUInt16BE(10) === port ? { ok: true } : { ok: false, error: `result ${result}, got port ${m.length >= 12 ? m.readUInt16BE(10) : "?"}` });
+    });
+    sock.on("error", (e) => done({ ok: false, error: e.message }));
+    sock.send(req, 5351, gateway);
+  });
+}
+
+async function keepForwards() {
+  const t = config.turn;
+  if (!t || !config.gateway || config.portForwarding === false) return;
+  const list = [["udp", t.port || 3478], ["tcp", t.port || 3478]];
+  for (let p = t.minPort || 40000; p <= (t.maxPort || 40040); p++) list.push(["udp", p]);
+  let ok = 0;
+  let failed = 0;
+  let error = "";
+  for (const [proto, port] of list) {
+    const r = await natpmpMap(config.gateway, proto, port, 3600);
+    if (r.ok) ok++; else { failed++; error = `${proto} ${port}: ${r.error}`; }
+  }
+  const before = forwards;
+  forwards = { ok, failed, ts: Date.now(), error };
+  if (failed && (!before.failed || !before.ts)) event(`Router port forwarding: ${failed} of ${list.length} failed (${error})`);
+  else if (!failed && (before.failed || !before.ts)) event(`Router is forwarding all ${ok} TURN ports to this computer`);
+}
+
 // ---------- the quick tunnel ----------
 
 let tunnelUrl = config.publicUrl || null;
@@ -1116,6 +1166,7 @@ async function syncNow() {
       admins: ADMINS.filter((n) => isAdmin(getAccount(n))),
       signupMode: signupMode(),
       oldNames: q("SELECT k FROM kv WHERE k LIKE 'alias:%' LIMIT 5000").all().map((r) => r.k.slice(6)),
+      checkTurn: !!(config.turn && publicIp) && Date.now() - lastTurnCheck > 30 * 60e3,
       turn: config.turn && publicIp ? { ...config.turn, host: publicIp } : null,
       wantVapid: !kvGet("vapid", null),
       accounts: dirty.map((a) => ({
@@ -1146,6 +1197,12 @@ async function syncNow() {
     if (pull.length) kvSet("cfPull", kvGet("cfPull", []).filter((n) => !pull.includes(n)));
     archiveAcks = {};
     if (out.vapid && out.vapid.publicKey) kvSet("vapid", out.vapid);
+    if (out.turnCheck) {
+      lastTurnCheck = Date.now();
+      const was = turnCheck;
+      turnCheck = Object.assign({ ts: Date.now() }, out.turnCheck);
+      if (!was || was.ok !== turnCheck.ok) event(turnCheck.ok ? `TURN is reachable from the internet (${turnCheck.ms} ms)` : `TURN is NOT reachable from the internet: ${turnCheck.error}`);
+    }
     for (const u of out.users || []) importFromBackup(u);
     lastSync = { ok: true, ts: Date.now() };
     again = out.more || q("SELECT 1 FROM accounts WHERE cfDirty > 0").get() || pendingCf.length;
@@ -1205,6 +1262,9 @@ pinAdmins();
 setInterval(pinAdmins, 60e3);
 makeSetupCode();
 setInterval(makeSetupCode, 60e3);
+
+keepForwards();
+setInterval(keepForwards, 30 * 60e3);
 
 server.listen(PORT, "127.0.0.1", async () => {
   log(`FreeMessenger relay on http://127.0.0.1:${PORT}, data in ${DATA}, ${(used / 1024 ** 3).toFixed(2)} GB of ${config.capGB || 100} GB used`);

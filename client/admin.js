@@ -424,6 +424,10 @@ function renderActivity(body) {
     el("p", { class: "hint" }, s.dbBackup ? `Last backup: ${when(s.dbBackup.ts)} (${size(s.dbBackup.bytes)})` : "No backup yet. Backups run every night at 3 AM (Settings tab → Back up now)."),
     el("h3", {}, "Connections"),
     el("p", { class: "hint" }, `Home server address: ${s.tunnel || "not up yet"}`),
+    el("p", { class: "hint" }, s.forwards && s.forwards.ts
+      ? (s.forwards.failed ? `Router port forwarding: ${s.forwards.failed} ports failed (${s.forwards.error}). Calls through strict networks may not connect.` : `Router port forwarding: all ${s.forwards.ok} TURN ports forwarded (renewed ${when(s.forwards.ts)}).`)
+      : "Router port forwarding: not set up."),
+    el("p", { class: "hint" }, s.turnCheck ? (s.turnCheck.ok ? `Calls relay (TURN): reachable from the internet (checked ${when(s.turnCheck.ts)}).` : `Calls relay (TURN): NOT reachable from the internet — ${s.turnCheck.error} (checked ${when(s.turnCheck.ts)}).`) : "Calls relay (TURN): not checked yet."),
     el("p", { class: "hint" }, s.backup ? `Last sync with the backup relay: ${when(s.backup.ts)} — ${s.backup.ok ? "OK" : "failed: " + s.backup.error}` : "Not synced with the backup relay yet."),
     el("h3", {}, "Blocked IP addresses"),
   );
