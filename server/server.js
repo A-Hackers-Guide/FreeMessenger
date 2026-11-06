@@ -11,6 +11,7 @@
 // this computer is off. See server/README.md.
 
 import http from "node:http";
+import nodeCrypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -24,6 +25,7 @@ const CONFIG_FILE = path.join(DATA, "config.json");
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
 const PORT = config.port || 8790;
 const ADMINS = (config.admins || []).filter((n) => S.USERNAME.test(n));
+const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 const CAP_BYTES = (config.capGB || 100) * 1024 ** 3;
 const BACKUP = config.backup || "";
 const SESSION_TTL_MS = 30 * 24 * 3600e3;
@@ -105,7 +107,89 @@ const limiter = new S.RateLimit();
 const pollerOnline = (name) => Date.now() - (lastPoll.get(name) || 0) < POLL_ONLINE_MS;
 const live = (name) => [...(sockets.get(name) || [])];
 const isOnline = (name) => live(name).length > 0 || pollerOnline(name);
-const flags = (a) => ({ admin: ADMINS.includes(a.username), proxy: ADMINS.includes(a.username) || !!a.proxy, primary: true });
+// ---------- who is admin ----------
+//
+// Admin is tied to the exact signing key of the admin account (pinned in
+// config.json the first time the account is seen here), not just the
+// username, and the admin panel also needs a code from an authenticator app.
+
+function pinFor(name) {
+  return (config.adminPins || {})[name] || null;
+}
+function isAdmin(a) {
+  if (!a || !ADMINS.includes(a.username)) return false;
+  const pin = pinFor(a.username);
+  if (!pin) return false;
+  const k = JSON.parse(a.sigPub);
+  return k.x === pin.x && k.y === pin.y;
+}
+function pinAdmins() {
+  let changed = false;
+  for (const name of ADMINS) {
+    const a = getAccount(name);
+    if (!a || pinFor(name)) continue;
+    const k = JSON.parse(a.sigPub);
+    config.adminPins = Object.assign({}, config.adminPins, { [name]: { x: k.x, y: k.y } });
+    changed = true;
+    event(`Admin @${name} is now tied to its current key`);
+  }
+  if (changed) saveConfig();
+}
+
+const TOTP_STEP = 30;
+const unlockFailures = { n: 0, until: 0 };
+const usedCodes = new Map(); // code+step -> time, so a code works only once
+
+function base32Decode(text) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const ch of text.replace(/[\s=]/g, "").toUpperCase()) {
+    const v = alphabet.indexOf(ch);
+    if (v === -1) throw new Error("bad secret");
+    bits += v.toString(2).padStart(5, "0");
+  }
+  const out = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(out);
+}
+
+function totpAt(secret, step) {
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(step));
+  const h = nodeCrypto.createHmac("sha1", base32Decode(secret)).update(msg).digest();
+  const o = h[h.length - 1] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, "0");
+}
+
+function checkCode(code) {
+  const now = Date.now();
+  if (now < unlockFailures.until) return { error: `Too many wrong codes. Try again after ${new Date(unlockFailures.until).toLocaleTimeString()}.` };
+  if (!config.adminTotp) return { error: "The admin code isn't set up on the home server." };
+  const step = Math.floor(now / 1000 / TOTP_STEP);
+  const c = String(code || "").replace(/\s/g, "");
+  for (const d of [0, -1, 1]) {
+    const expected = totpAt(config.adminTotp, step + d);
+    if (/^\d{6}$/.test(c) && nodeCrypto.timingSafeEqual(Buffer.from(c), Buffer.from(expected))) {
+      const key = c + ":" + (step + d);
+      if (usedCodes.has(key)) return { error: "That code was already used. Wait for the next one." };
+      usedCodes.set(key, now);
+      for (const [k, t] of usedCodes) if (now - t > 5 * 60e3) usedCodes.delete(k);
+      unlockFailures.n = 0;
+      return { ok: true };
+    }
+  }
+  if (++unlockFailures.n >= 5) {
+    unlockFailures.until = now + 15 * 60e3;
+    unlockFailures.n = 0;
+    event("5 wrong admin codes in a row: the admin panel is locked for 15 minutes");
+  }
+  return { error: "Wrong code." };
+}
+
+const UNLOCK_MS = 8 * 3600e3;
+const httpUnlocks = new Map(); // HTTP session token -> unlocked until
+
+const flags = (a) => ({ admin: isAdmin(a), proxy: isAdmin(a) || !!a.proxy, primary: true });
 
 function kick(name, code, reason) {
   for (const ws of live(name)) try { ws.close(code, reason); } catch {}
@@ -211,7 +295,7 @@ function notify(name, data, urgent) {
 
 const proxyTickets = new Map(); // ticket -> { username, until }
 
-async function op(a, type, msg) {
+async function op(a, type, msg, sess) {
   if (type === "send") return send(a, msg);
   if (type === "push-sub") return pushSubscribe(a.username, msg.sub);
   if (type === "push-unsub") return pushUnsubscribe(a.username, msg.endpoint);
@@ -229,7 +313,18 @@ async function op(a, type, msg) {
     return { ticket };
   }
   if (type === "admin") {
-    if (!ADMINS.includes(a.username)) return { error: "Only the admin can do that." };
+    if (!isAdmin(a)) {
+      if (ADMINS.includes(a.username)) event(`Refused admin to @${a.username}: the key doesn't match the pinned admin key`);
+      return { error: "Only the admin can do that." };
+    }
+    if (msg.action === "unlock") {
+      const r = checkCode(msg.code);
+      if (r.error) { event(`Wrong admin code for @${a.username}`); return r; }
+      sess.unlockedUntil = Date.now() + UNLOCK_MS;
+      event(`Admin panel unlocked by @${a.username}`);
+      return { ok: true };
+    }
+    if (!sess || !(sess.unlockedUntil > Date.now())) return { error: "Enter the code from your authenticator app.", needCode: true };
     try { return await admin(a.username, msg); } catch (e) { return { error: e.message }; }
   }
   return null;
@@ -249,7 +344,7 @@ function accountRow(r) {
   const counts = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM archive WHERE sender = ?").get(r.username);
   return {
     username: r.username, created: r.created, signupIp: r.signupIp, lastIp: r.lastIp, lastSeen: r.lastSeen,
-    status: r.status, timeoutUntil: r.timeoutUntil, proxy: !!r.proxy, admin: ADMINS.includes(r.username),
+    status: r.status, timeoutUntil: r.timeoutUntil, proxy: !!r.proxy, admin: isAdmin(r),
     profile: JSON.parse(r.profile || "{}"), sent: counts.n, bytes: counts.bytes, online: isOnline(r.username),
     origin: r.origin, note: r.note || "",
   };
@@ -413,7 +508,9 @@ async function httpOp(name, msg, ip) {
     return [200, { messages: [...rows.map((r) => JSON.parse(r.env)), ...eph] }];
   }
   if (msg.op === "ack") { ack(name, msg.items); return [200, { ok: true }]; }
-  const r = await op(user, msg.op, msg);
+  const sess = { unlockedUntil: httpUnlocks.get(msg.token) || 0 };
+  const r = await op(user, msg.op, msg, sess);
+  if (sess.unlockedUntil) httpUnlocks.set(msg.token, sess.unlockedUntil);
   return r ? [200, r] : [400, { error: "unknown op" }];
 }
 
@@ -483,7 +580,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/admin-key") {
       const a = ADMINS[0] && (await ensureAccount(ADMINS[0]));
-      return reply(res, 200, a ? { ecdhPub: JSON.parse(a.ecdhPub) } : {});
+      return reply(res, 200, a && isAdmin(a) ? { ecdhPub: JSON.parse(a.ecdhPub) } : {});
     }
     if (url.pathname === "/api/ice") {
       const name = url.searchParams.get("u") || "guest";
@@ -536,6 +633,11 @@ async function ensureAccount(name) {
     if (r.status !== 200) return null;
     const p = await r.json();
     if (!S.isPublicJwk(p.sigPub) || !S.isPublicJwk(p.ecdhPub) || getAccount(name)) return getAccount(name);
+    const pin = pinFor(name);
+    if (pin && (p.sigPub.x !== pin.x || p.sigPub.y !== pin.y)) {
+      event(`Refused to copy @${name} from the backup relay: its key isn't the pinned admin key`);
+      return null;
+    }
     q("INSERT INTO accounts (username, sigPub, ecdhPub, created, origin, cfDirty, profile) VALUES (?, ?, ?, ?, 'cf', 0, ?)")
       .run(name, JSON.stringify(p.sigPub), JSON.stringify(p.ecdhPub), Date.now(), JSON.stringify(S.cleanProfile(p.profile)));
     event(`New account @${name} (made on the backup relay)`);
@@ -561,6 +663,7 @@ server.on("upgrade", async (req, socket, head) => {
 function onSocket(ws, name, ip) {
   const challenge = crypto.randomUUID();
   let authed = false;
+  const sess = { unlockedUntil: 0 };
   ws.send(JSON.stringify({ type: "challenge", challenge }));
   ws.on("message", async (data) => {
     const raw = data.toString();
@@ -588,7 +691,7 @@ function onSocket(ws, name, ip) {
       return;
     }
     if (msg.type === "ack") return ack(name, msg.items);
-    const r = await op(a, msg.type, msg);
+    const r = await op(a, msg.type, msg, sess);
     if (r) ws.send(JSON.stringify({ type: "sent", ref: msg.ref, ...r }));
   });
   ws.on("close", () => {
@@ -664,7 +767,7 @@ async function syncNow() {
       pull,
       ts: Date.now(),
       primary: tunnelUrl,
-      admins: ADMINS,
+      admins: ADMINS.filter((n) => isAdmin(getAccount(n))),
       turn: config.turn && publicIp ? { ...config.turn, host: publicIp } : null,
       wantVapid: !kvGet("vapid", null),
       accounts: dirty.map((a) => ({
@@ -743,6 +846,9 @@ function importFromBackup(u) {
 }
 
 // ---------- start ----------
+
+pinAdmins();
+setInterval(pinAdmins, 60e3);
 
 server.listen(PORT, "127.0.0.1", async () => {
   log(`FreeMessenger relay on http://127.0.0.1:${PORT}, data in ${DATA}, ${(used / 1024 ** 3).toFixed(2)} GB of ${config.capGB || 100} GB used`);
