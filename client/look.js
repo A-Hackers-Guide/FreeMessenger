@@ -17,6 +17,23 @@ export const BARS = [
 export const ANIMATIONS = [
   ["none", "None"], ["aurora", "Aurora"], ["bubbles", "Bubbles"], ["stars", "Stars"], ["snow", "Snow"],
   ["hearts", "Hearts"], ["waves", "Waves"], ["rain", "Rain"], ["confetti", "Confetti"],
+  ["fireflies", "Fireflies"], ["petals", "Falling petals"], ["balloons", "Balloons"], ["sparkles", "Sparkles"],
+  ["lava", "Lava lamp"], ["matrix", "Matrix"], ["northern", "Northern lights"],
+];
+
+// Fonts already on people's devices (no downloads, so nothing to track you).
+export const FONTS = [
+  ["system", "Standard", ""],
+  ["rounded", "Rounded", 'ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Nunito", "Varela Round", system-ui, sans-serif'],
+  ["serif", "Serif", 'ui-serif, Georgia, "Times New Roman", serif'],
+  ["elegant", "Elegant", 'Didot, "Bodoni 72", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif'],
+  ["mono", "Typewriter", 'ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace'],
+  ["playful", "Playful", '"Comic Sans MS", "Chalkboard SE", "Comic Neue", "Marker Felt", cursive, sans-serif'],
+  ["condensed", "Narrow", '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif'],
+];
+
+export const BUBBLES = [
+  ["round", "Round"], ["soft", "Soft corners"], ["pill", "Pill"], ["square", "Square"], ["leaf", "Leaf"], ["outline", "Outline"],
 ];
 
 const g = (c1, c2, angle = 135, text = "#ffffff") => ({ type: "gradient", c1, c2, angle, text });
@@ -73,12 +90,24 @@ async function paint(el, style, key) {
 // The whole app: accent color and every bar.
 export async function applyLook(look) {
   const root = document.documentElement;
+  const font = FONTS.find((f) => f[0] === look.font);
+  if (font && font[2]) root.style.setProperty("--font", font[2]); else root.style.removeProperty("--font");
+  root.setAttribute("data-bubble", look.bubble || "round");
+  for (const [k, v] of [["--mine", look.mine], ["--theirs", look.theirs]]) {
+    if (v) {
+      root.style.setProperty(k, v);
+      root.style.setProperty(k + "-text", readable(v));
+    } else {
+      root.style.removeProperty(k + "-text");
+    }
+  }
+  if (!look.theirs) root.style.removeProperty("--theirs");
   if (look.accent) {
     root.style.setProperty("--accent", look.accent);
-    root.style.setProperty("--mine", look.accent);
+    if (!look.mine) { root.style.setProperty("--mine", look.accent); root.style.setProperty("--mine-text", readable(look.accent)); }
   } else {
     root.style.removeProperty("--accent");
-    root.style.removeProperty("--mine");
+    if (!look.mine) root.style.removeProperty("--mine");
   }
   for (const [slot, , selector] of BARS) await paint(document.querySelector(selector), (look.bars || {})[slot], "ui:" + slot);
   const meta = document.querySelector('meta[name="theme-color"]');
@@ -97,7 +126,10 @@ export async function applyChat(chatLook, look) {
     layer.dataset.anim = anim;
     layer.textContent = "";
     // Bubbles, hearts and confetti are separate floating pieces.
-    const pieces = { bubbles: ["", 16], hearts: ["❤️💖💕💗💘", 14], confetti: ["", 28] }[anim];
+    const pieces = {
+      bubbles: ["", 16], hearts: ["❤️💖💕💗💘", 14], confetti: ["", 28], fireflies: ["", 22], petals: ["🌸🌺💮🌸", 16],
+      balloons: ["🎈🎈🎈🎉", 12], sparkles: ["✨⭐💫🌟", 20], matrix: ["", 22],
+    }[anim];
     if (pieces) {
       const emoji = Array.from(pieces[0]);
       for (let i = 0; i < pieces[1]; i++) {
@@ -110,11 +142,21 @@ export async function applyChat(chatLook, look) {
         const size = 10 + Math.round(Math.random() * 30);
         s.style.setProperty("--size", size + "px");
         if (anim === "confetti") s.style.setProperty("--hue", Math.round(Math.random() * 360));
+        if (anim === "sparkles" || anim === "fireflies") s.style.top = Math.round(Math.random() * 92) + "%";
+        if (anim === "matrix") s.textContent = Array.from({ length: 14 }, () => String.fromCharCode(0x30a0 + Math.floor(Math.random() * 96))).join("\n");
         layer.appendChild(s);
       }
     }
   }
   layer.classList.toggle("dark-bg", isDark(style));
+}
+
+// Black or white text, whichever reads better on that color.
+function readable(hex) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return "#ffffff";
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#15171c" : "#ffffff";
 }
 
 function isDark(style) {
