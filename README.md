@@ -79,11 +79,10 @@ Yes. There are no ads, subscriptions or paid features. It runs on the free tiers
 Partly, and here's exactly how:
 
 - Messages are **encrypted in your browser** before they're sent. The servers that pass them along can't read them.
-- **But the site's admin can.** Every saved message also carries an "admin copy", encrypted for the admin, so they can check for illegal content in the admin panel. You're told this when you sign up.
-- The admin can also see account details (username, profile, when you joined and were last online) and **IP addresses**, and can freeze, time out, ban or remove accounts.
+- The admin can see account details (username, profile, when you joined and were last online), and can freeze, time out, ban or remove accounts.
 - Typing indicators and call audio and video are never saved. Voice and video go directly between your browser and your friend's whenever possible.
 
-**Verify encryption** in a chat shows a 12-digit code. If it matches your friend's, nobody swapped keys between you. It doesn't stop the admin copy.
+**Verify encryption** in a chat shows a 12-digit code. If it matches your friend's, nobody swapped keys between you.
 
 ### What is the backup file?
 Your account isn't stored on a server. It lives in your browser as a pair of secret keys. The backup file is a copy of those keys.
@@ -97,7 +96,7 @@ Use it to:
 ### Where are my messages saved?
 In your browser, and on the main server, which keeps every message (encrypted) with no limit except its disk space. On a new device, restore your backup, then use **Settings → Get my old messages** to download your texts. Photos and files aren't downloaded again.
 
-The main server runs on the site owner's computer. When it's off, a backup server on Cloudflare takes over and holds messages for up to 30 days, and the two copy everything to each other when the main one comes back.
+The main server runs on my computer. When it's off, a backup server on Cloudflare takes over and holds messages for up to 30 days, and the two copy everything to each other when the main one comes back.
 
 ### Will I get notified about new messages?
 Yes, even when FreeMessenger is closed. Go to **⋯ → Settings → Notifications** and allow them. On iPhone and iPad, first install the app (Share → Add to Home Screen) and turn them on from there; Apple only allows notifications for installed web apps.
