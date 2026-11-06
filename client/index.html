@@ -44,7 +44,7 @@
       <div class="divider"><span>or</span></div>
       <button id="import-btn" class="ghost">Restore from a backup file</button>
       <input type="file" id="import-file" accept=".json,application/json" hidden>
-      <p class="fine">No email, no phone number, no password. Messages are end-to-end encrypted.</p>
+      <p class="fine">No email, no phone number, no password. Messages are encrypted, but <strong>the site's admin can read them</strong> to keep FreeMessenger free of illegal content, and your IP address is saved. By creating an account you agree to this.</p>
     </div>
   </div>
 
@@ -56,9 +56,12 @@
           <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
         <div id="menu" class="menu" hidden>
+          <button id="profile-btn">My profile</button>
           <button id="share-btn">Share my link</button>
           <button id="new-group-btn">New group</button>
+          <button id="browser-btn" hidden>Web viewer</button>
           <button id="settings-btn">Settings</button>
+          <button id="admin-btn" hidden>Admin panel</button>
           <button id="backup-btn">Download backup</button>
           <button id="install-btn" hidden>Install app</button>
           <button id="logout-btn" class="danger-text">Sign out of this browser</button>
@@ -85,12 +88,15 @@
     <main id="chat">
       <div id="empty" class="hint center">Pick a chat, or type a username to start one.</div>
       <section id="convo" hidden>
+        <div id="chat-bg" aria-hidden="true"></div>
         <header class="bar">
           <button id="back-btn" class="icon back" aria-label="Back">
             <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
+          <span id="peer-avatar" class="avatar small-avatar" role="button" tabindex="0" aria-label="View profile"></span>
           <div class="peer">
-            <strong id="peer-name"></strong>
+            <strong id="peer-name" role="button" tabindex="0"></strong>
+            <span id="peer-status" class="peer-status" hidden></span>
             <span id="peer-typing" class="typing" hidden></span>
             <button id="safety-btn" class="link">Verify encryption</button>
             <button id="members-btn" class="link" hidden></button>
@@ -156,7 +162,7 @@
 
   <dialog id="safety-dialog">
     <h2>Verify encryption with <span id="safety-peer"></span></h2>
-    <p>Compare this code with your friend in person or on a call. If yours match, nobody can read your messages, not even the relay.</p>
+    <p>Compare this code with your friend in person or on a call. If yours match, nobody swapped keys between you. (The site admin can still read messages through the admin copy.)</p>
     <p id="safety-code" class="code"></p>
     <button id="safety-close" class="primary">Done</button>
   </dialog>
@@ -189,8 +195,93 @@
     <label class="setting"><span>Let people see when I'm typing</span><input type="checkbox" id="set-typing"></label>
     <label class="setting"><span>Notifications</span><button type="button" id="notify-btn" class="ghost small">Turn on</button></label>
     <label class="setting"><span>Save a copy of all my chats</span><button type="button" id="export-btn" class="ghost small">Export</button></label>
+    <label class="setting"><span>Get my old messages from the server (for a new browser)</span><button type="button" id="history-btn" class="ghost small">Download</button></label>
+    <h3 class="settings-head">Look</h3>
+    <label class="setting"><span>Theme</span><select id="set-preset"></select></label>
+    <label class="setting"><span>Accent color</span><input type="color" id="set-accent"></label>
+    <p class="hint tight">Color, gradient or picture for each part:</p>
+    <div id="set-bars" class="bar-buttons"></div>
+    <p class="fine">Each chat can also have its own background and animation: open the chat, then ⋮ → Background and animation.</p>
+    <h3 class="settings-head">Privacy</h3>
+    <p class="fine">Messages are encrypted, but every saved message carries a copy the site admin can read, to stop illegal content. The admin can also see your account details and IP address, and can freeze, time out or ban accounts. Typing and call audio/video aren't saved.</p>
     <button id="settings-close" class="primary">Done</button>
   </dialog>
+
+  <dialog id="profile-dialog">
+    <h2 id="profile-title">Profile</h2>
+    <div class="profile-top">
+      <span id="profile-pic" class="avatar big-avatar"></span>
+      <div>
+        <strong id="profile-user"></strong>
+        <div class="row tight-row">
+          <button type="button" id="profile-pic-btn" class="ghost small">Change picture</button>
+          <button type="button" id="profile-pic-remove" class="ghost small">Remove</button>
+        </div>
+        <input type="file" id="profile-pic-file" accept="image/*" hidden>
+      </div>
+    </div>
+    <div class="profile-fields">
+      <label>Display name<input id="profile-display" maxlength="40" autocomplete="off" placeholder="What people see instead of your username"></label>
+      <label>Real name<input id="profile-real" maxlength="60" autocomplete="off" placeholder="Optional"></label>
+      <label>Status<input id="profile-status" maxlength="80" autocomplete="off" placeholder="🎮 Gaming, back later"></label>
+      <label>About<textarea id="profile-bio" maxlength="300" rows="3" placeholder="A little about you"></textarea></label>
+    </div>
+    <p id="profile-note" class="fine">Everyone who knows your username can see your profile.</p>
+    <p id="profile-error" class="error" role="alert"></p>
+    <div class="row">
+      <button type="button" id="profile-close" class="ghost">Close</button>
+      <button type="button" id="profile-save" class="primary">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="look-dialog">
+    <h2 id="look-title">Customize</h2>
+    <div id="look-preview" class="look-preview">Aa</div>
+    <label class="setting"><span>Style</span>
+      <select id="look-type"><option value="none">Standard</option><option value="color">Color</option><option value="gradient">Gradient</option><option value="picture">Picture</option></select>
+    </label>
+    <label class="setting" id="look-c1-row"><span>Color</span><input type="color" id="look-c1"></label>
+    <label class="setting" id="look-c2-row"><span>Second color</span><input type="color" id="look-c2"></label>
+    <label class="setting" id="look-angle-row"><span>Direction</span><input type="range" id="look-angle" min="0" max="360" step="15"></label>
+    <div class="setting" id="look-pic-row"><span>Picture</span><button type="button" id="look-pic-btn" class="ghost small">Choose…</button><input type="file" id="look-pic" accept="image/*" hidden></div>
+    <div class="setting" id="look-text-row"><span>Text and icon color</span><span><input type="checkbox" id="look-text-on"> <input type="color" id="look-text"></span></div>
+    <label class="setting" id="look-anim-row"><span>Animation</span><select id="look-anim"></select></label>
+    <div class="row">
+      <button type="button" id="look-reset" class="ghost">Reset</button>
+      <button type="button" id="look-done" class="primary">Done</button>
+    </div>
+  </dialog>
+
+  <dialog id="privacy-dialog">
+    <h2>What's new in FreeMessenger</h2>
+    <p>Profiles with pictures, themes, chat backgrounds and animations, and no limit on saved messages.</p>
+    <p><strong>Privacy change:</strong> messages are still encrypted, but each saved message now also carries a copy the site admin can read, to keep FreeMessenger free of illegal content. The admin can see account details and IP addresses, and can freeze, time out or ban accounts. Typing and calls aren't saved.</p>
+    <button id="privacy-ok" class="primary">OK</button>
+  </dialog>
+
+  <div id="browser" class="panel" hidden>
+    <form id="browser-form" class="bar">
+      <button type="button" id="browser-close" class="icon" aria-label="Close web viewer">✕</button>
+      <input id="browser-url" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Type a link or search">
+      <button type="submit" class="primary small">Go</button>
+    </form>
+    <iframe id="browser-frame" title="Web viewer" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+  </div>
+
+  <div id="admin" class="panel" hidden>
+    <header class="bar">
+      <button id="admin-close" class="icon" aria-label="Close admin panel">✕</button>
+      <strong class="grow">Admin panel</strong>
+      <button id="admin-refresh" class="ghost small">Refresh</button>
+    </header>
+    <nav class="tabs">
+      <button data-tab="accounts" class="on">Accounts</button>
+      <button data-tab="messages">Messages</button>
+      <button data-tab="viewer">Web viewer</button>
+      <button data-tab="activity">Activity</button>
+    </nav>
+    <div id="admin-body"></div>
+  </div>
 
   <div id="viewer" hidden>
     <img id="viewer-img" alt="">

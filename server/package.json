@@ -1,0 +1,13 @@
+{
+  "name": "freemessenger-home-relay",
+  "private": true,
+  "type": "module",
+  "description": "FreeMessenger's main relay, run on your own computer",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js data"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}

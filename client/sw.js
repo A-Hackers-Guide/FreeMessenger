@@ -2,7 +2,7 @@
 // and shows notifications the relay sends while the site is closed.
 // Only browsers new enough to have service workers run this file.
 
-const CACHE = "freemessenger-v3";
+const CACHE = "freemessenger-v4";
 const SHELL = ["./", "index.html", "style.css", "app.min.js", "crypto-fallback.min.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
