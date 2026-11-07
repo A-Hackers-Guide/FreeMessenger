@@ -638,3 +638,31 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .menu button { color: inherit; }
 #chat-bg[data-anim="matrix"] .fx { animation-name: fm-drop-straight; }
 @keyframes fm-drop-straight { from { transform: translateY(0); } to { transform: translateY(calc(100vh + 60px)); } }
+
+/* Live wallpapers: the canvas is drawn small and stretched; the scenes are soft. */
+#chat-bg canvas.bgfx { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* ---------- animated profile pictures ---------- */
+@property --fx-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+.avatar[class*="fx-"] { overflow: visible; position: relative; }
+.avatar[class*="fx-"] img { border-radius: inherit; }
+.avatar.fx-glow { animation: fx-glow 2.4s ease-in-out infinite; }
+@keyframes fx-glow { 0%, 100% { box-shadow: 0 0 4px 1px color-mix(in srgb, var(--accent) 60%, transparent); } 50% { box-shadow: 0 0 14px 4px color-mix(in srgb, var(--accent) 85%, transparent); } }
+.avatar.fx-rainbow { padding: 2.5px; background: conic-gradient(from var(--fx-a), #ff4d6d, #ffb703, #8ac926, #1982c4, #6a4c93, #ff4d6d); animation: fx-turn 3s linear infinite; }
+@keyframes fx-turn { to { --fx-a: 360deg; } }
+.avatar.fx-pulse { animation: fx-pulse 1.4s ease-in-out infinite; }
+@keyframes fx-pulse { 0%, 40%, 100% { transform: scale(1); } 15% { transform: scale(1.08); } 28% { transform: scale(1.02); } 32% { transform: scale(1.06); } }
+.avatar.fx-neon { animation: fx-neon 3s linear infinite; }
+@keyframes fx-neon { 0%, 100% { box-shadow: 0 0 0 2px #22d3ee, 0 0 12px 2px #22d3ee; } 33% { box-shadow: 0 0 0 2px #e879f9, 0 0 12px 2px #e879f9; } 66% { box-shadow: 0 0 0 2px #a3e635, 0 0 12px 2px #a3e635; } }
+.avatar.fx-fire { animation: fx-fire 0.9s ease-in-out infinite alternate; }
+@keyframes fx-fire { 0% { box-shadow: 0 -2px 6px 1px #f97316, 0 -5px 12px 2px #ef4444; } 50% { box-shadow: 0 -4px 9px 2px #fb923c, 0 -9px 16px 3px #dc2626; } 100% { box-shadow: 0 -3px 7px 1px #fbbf24, 0 -7px 14px 2px #f97316; } }
+.avatar.fx-orbit::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--accent); border-right-color: color-mix(in srgb, var(--accent) 40%, transparent); animation: fx-spin 1.6s linear infinite; pointer-events: none; }
+@keyframes fx-spin { to { transform: rotate(360deg); } }
+.avatar.fx-sparkle::before, .avatar.fx-sparkle::after { content: "✦"; position: absolute; color: #fde047; text-shadow: 0 0 4px #fff; font-size: 11px; line-height: 1; pointer-events: none; animation: fx-twinkle 1.8s ease-in-out infinite; }
+.avatar.fx-sparkle::before { top: -3px; right: -2px; }
+.avatar.fx-sparkle::after { bottom: 0; left: -4px; font-size: 8px; animation-delay: 0.9s; }
+@keyframes fx-twinkle { 0%, 100% { opacity: 0; transform: scale(0.4) rotate(0deg); } 50% { opacity: 1; transform: scale(1.1) rotate(90deg); } }
+.big-avatar.fx-sparkle::before { font-size: 20px; } .big-avatar.fx-sparkle::after { font-size: 14px; }
+.avatar.fx-float { animation: fx-float 3s ease-in-out infinite; }
+@keyframes fx-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .avatar[class*="fx-"], .avatar[class*="fx-"]::before, .avatar[class*="fx-"]::after { animation: none !important; } }

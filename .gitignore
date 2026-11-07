@@ -3,3 +3,6 @@ node_modules/
 .dev.vars
 .DS_Store
 .claude/
+client/_scenes.html
+client/_gallery.html
+client/_test.gif
