@@ -297,8 +297,12 @@ dialog.dialog-fallback { display: block; position: fixed; top: 50%; left: 50%; t
 
 /* ---------- chat backgrounds and animations ---------- */
 #convo { position: relative; }
-#convo > :not(#chat-bg) { position: relative; z-index: 1; }
-#convo > .bar { z-index: 3; }
+/* Everything in a chat sits above the animated background. (A plain sibling
+   selector, so the rules below can raise the top bar and menus above it.) */
+#chat-bg ~ * { position: relative; z-index: 1; }
+#convo > .bar { z-index: 10; }
+#chat-bg ~ #attach-menu, #chat-bg ~ #mention-list { position: absolute; z-index: 11; }
+#chat-bg ~ #emoji-panel { z-index: 9; }
 #chat-bg { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
 #chat-bg.dark-bg ~ #messages .day, #chat-bg.dark-bg ~ #messages .meta, #chat-bg.dark-bg ~ #messages .system .bubble { color: #e5e7eb; }
 #chat-bg.dark-bg ~ #messages .day { background: rgba(0, 0, 0, .35); border-color: transparent; }
@@ -629,3 +633,8 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 :root[data-bubble="outline"] .ll-mine { background: transparent; color: var(--text); border: 2px solid var(--mine); }
 :root[data-bubble="outline"] .ll-theirs { background: transparent; color: var(--text); border: 2px solid var(--muted); }
 .ll-composer { padding: 8px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); }
+/* Menus keep normal text and icon colors even inside a colored bar. */
+.menu { color: var(--text); --bar-icon: var(--accent); }
+.menu button { color: inherit; }
+#chat-bg[data-anim="matrix"] .fx { animation-name: fm-drop-straight; }
+@keyframes fm-drop-straight { from { transform: translateY(0); } to { transform: translateY(calc(100vh + 60px)); } }
