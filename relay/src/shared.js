@@ -82,7 +82,11 @@ export function allowSend(limiter, username, hint, meta) {
 // ---------- profiles ----------
 
 const PROFILE_LIMITS = { display: 40, real: 60, status: 80, bio: 300 };
-export const MAX_AVATAR = 90 * 1024;
+// Still pictures are shrunk to ~80 KB by the app; animated GIF/WebP are sent
+// as they are, so they get more room (still under one message's size limit).
+export const MAX_AVATAR = 300 * 1024;
+// Animated effects someone can put around their picture.
+export const AVATAR_FX = ["glow", "rainbow", "pulse", "neon", "fire", "orbit", "sparkle", "float"];
 
 export function cleanProfile(p) {
   const out = {};
@@ -90,9 +94,10 @@ export function cleanProfile(p) {
   for (const [k, max] of Object.entries(PROFILE_LIMITS)) {
     if (typeof p[k] === "string" && p[k].trim()) out[k] = p[k].trim().slice(0, max);
   }
-  if (typeof p.avatar === "string" && p.avatar.length <= MAX_AVATAR && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(p.avatar)) {
+  if (typeof p.avatar === "string" && p.avatar.length <= MAX_AVATAR && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(p.avatar)) {
     out.avatar = p.avatar;
   }
+  if (typeof p.fx === "string" && AVATAR_FX.includes(p.fx)) out.fx = p.fx;
   return out;
 }
 

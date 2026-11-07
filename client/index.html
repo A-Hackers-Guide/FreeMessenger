@@ -299,6 +299,7 @@
           <button type="button" id="profile-pic-remove" class="ghost small">Remove</button>
         </div>
         <input type="file" id="profile-pic-file" accept="image/*" hidden>
+        <small class="fine">GIFs move (up to 220 KB).</small>
       </div>
     </div>
     <div class="profile-fields">
@@ -306,6 +307,17 @@
       <label>Real name<input id="profile-real" maxlength="60" autocomplete="off" placeholder="Optional"></label>
       <label>Status<input id="profile-status" maxlength="80" autocomplete="off" placeholder="🎮 Gaming, back later"></label>
       <label>About<textarea id="profile-bio" maxlength="300" rows="3" placeholder="A little about you"></textarea></label>
+      <label>Picture effect<select id="profile-fx">
+        <option value="">None</option>
+        <option value="glow">Glow</option>
+        <option value="rainbow">Rainbow ring</option>
+        <option value="pulse">Heartbeat</option>
+        <option value="neon">Neon</option>
+        <option value="fire">Fire</option>
+        <option value="orbit">Orbit</option>
+        <option value="sparkle">Sparkles</option>
+        <option value="float">Floating</option>
+      </select></label>
     </div>
     <p id="profile-note" class="fine">Everyone who knows your username can see your profile.</p>
     <p id="profile-error" class="error" role="alert"></p>

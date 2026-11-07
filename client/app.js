@@ -59,11 +59,46 @@ if (!chats) {
 // Public profiles (display name, picture, status…), refreshed every 10 minutes.
 let profiles = store.get("profiles", {});
 const PROFILE_TTL = 10 * 60e3;
-const profileOf = (name) => (profiles[name] && profiles[name].p) || {};
+// Pictures (up to 300 KB for animated ones) live in IndexedDB and memory,
+// not localStorage, which only holds ~5 MB for everything.
+const avatarMem = new Map();
+function profileOf(name) {
+  const e = profiles[name];
+  if (!e || !e.p) return {};
+  const a = !e.p.avatar && e.p.av && avatarMem.get(name);
+  return a ? Object.assign({}, e.p, { avatar: a }) : e.p;
+}
 function rememberProfile(name, p) {
-  profiles[name] = { p: p || {}, at: Date.now() };
+  p = Object.assign({}, p || {});
+  delete p.av;
+  if (p.avatar) {
+    if (avatarMem.get(name) !== p.avatar) { avatarMem.set(name, p.avatar); files.put("avatar:" + name, p.avatar); }
+    delete p.avatar;
+    p.av = 1;
+  } else if (avatarMem.has(name)) {
+    avatarMem.delete(name);
+    files.remove("avatar:" + name);
+  }
+  profiles[name] = { p, at: Date.now() };
   store.set("profiles", profiles);
 }
+// Loads saved pictures once at start; moves any old in-localStorage ones over.
+(async () => {
+  let shown = 0;
+  for (const [name, e] of Object.entries(profiles)) {
+    if (!e || !e.p) continue;
+    if (e.p.avatar) { rememberProfile(name, e.p); profiles[name].at = e.at; shown++; continue; }
+    if (!e.p.av || avatarMem.has(name)) continue;
+    const a = await files.get("avatar:" + name);
+    if (typeof a === "string") { avatarMem.set(name, a); shown++; } else e.at = 0;
+  }
+  store.set("profiles", profiles);
+  if (shown && me) try { renderChats(); if (active) renderHeader(); } catch {}
+})();
+const setFx = (el, fx) => {
+  for (const c of [...el.classList]) if (c.slice(0, 3) === "fx-") el.classList.remove(c);
+  if (fx) el.classList.add("fx-" + fx);
+};
 // What the relay says this account may do (admin panel, web viewer).
 let flags = store.get("flags", { admin: false, proxy: false, primary: false });
 
@@ -1036,6 +1071,7 @@ $("contacts").onclick = $("results").onclick = (e) => {
 
 function fillAvatar(el, id) {
   clear(el);
+  setFx(el, "");
   const c = chats[id] || {};
   if (isBroadcast(id)) {
     el.classList.add("group");
@@ -1053,6 +1089,7 @@ function fillAvatar(el, id) {
     return;
   }
   const p = profileOf(id);
+  setFx(el, p.fx);
   if (p.avatar) {
     const img = document.createElement("img");
     img.src = p.avatar;
@@ -2622,6 +2659,9 @@ function openProfile(name) {
   clear(pic);
   if (p.avatar) { const img = document.createElement("img"); img.src = p.avatar; img.alt = ""; pic.appendChild(img); }
   else pic.textContent = (p.display || name)[0].toUpperCase();
+  setFx(pic, p.fx);
+  $("profile-fx").value = p.fx || "";
+  $("profile-fx").closest("label").hidden = !mine;
   for (const k of ["display", "real", "status", "bio"]) {
     const input = $("profile-" + k);
     input.value = p[k] || "";
@@ -2640,7 +2680,18 @@ $("profile-pic-file").onchange = async (e) => {
   e.target.value = "";
   if (!file) return;
   try {
-    pendingAvatar = await Look.squareDataUrl(file, 256, 80000);
+    const animated = /^image\/(gif|webp)$/.test(file.type);
+    if (animated && file.size <= 220 * 1024) {
+      // Kept exactly as it is so it still moves.
+      pendingAvatar = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error("Couldn't read that file."));
+        r.readAsDataURL(file);
+      });
+    } else if (file.type === "image/gif") {
+      throw new Error(`Moving pictures can be up to 220 KB (that one is ${Math.round(file.size / 1024)} KB). Try a shorter or smaller GIF.`);
+    } else pendingAvatar = await Look.squareDataUrl(file, 256, 80000);
     const pic = $("profile-pic");
     clear(pic);
     const img = document.createElement("img");
@@ -2651,6 +2702,7 @@ $("profile-pic-file").onchange = async (e) => {
     $("profile-error").textContent = err.message;
   }
 };
+$("profile-fx").onchange = () => setFx($("profile-pic"), $("profile-fx").value);
 $("profile-pic-remove").onclick = () => {
   pendingAvatar = null;
   const pic = $("profile-pic");
@@ -2662,11 +2714,14 @@ $("profile-save").onclick = async () => {
   const old = Object.assign({}, store.get("myProfile", {}), profileOf(me.username));
   const p = {};
   for (const k of ["display", "real", "status", "bio"]) p[k] = $("profile-" + k).value.trim();
+  p.fx = $("profile-fx").value || undefined;
   p.avatar = pendingAvatar === undefined ? old.avatar : pendingAvatar || undefined;
   const r = conn && conn.ready ? await conn.op("profile", { profile: p }) : { error: "You're offline. Try again when you're connected." };
   if (r.error) return ($("profile-error").textContent = r.error);
-  store.set("myProfile", p);
+  store.set("myProfile", Object.assign({}, p, { avatar: undefined }));
   rememberProfile(me.username, p);
+  if (active) renderHeader();
+  renderChats();
   $("me-name").textContent = p.display ? `${p.display}` : "@" + me.username;
   closeDialog($("profile-dialog"));
   toast("Profile saved. Everyone sees it now.");

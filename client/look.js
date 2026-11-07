@@ -4,6 +4,7 @@
 
 import { files } from "./store.js";
 import { openDialog, closeDialog } from "./compat.js";
+import * as Bgfx from "./bgfx.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -14,12 +15,13 @@ export const BARS = [
   ["composer", "Message bar", "#send-form"],
 ];
 
-export const ANIMATIONS = [
+// Live wallpapers first (drawn on the graphics chip), then the lighter CSS ones.
+export const ANIMATIONS = (Bgfx.supported() ? Bgfx.SCENES : []).concat([
   ["none", "None"], ["aurora", "Aurora"], ["bubbles", "Bubbles"], ["stars", "Stars"], ["snow", "Snow"],
   ["hearts", "Hearts"], ["waves", "Waves"], ["rain", "Rain"], ["confetti", "Confetti"],
   ["fireflies", "Fireflies"], ["petals", "Falling petals"], ["balloons", "Balloons"], ["sparkles", "Sparkles"],
   ["lava", "Lava lamp"], ["matrix", "Matrix"], ["northern", "Northern lights"],
-];
+]);
 
 // Fonts already on people's devices (no downloads, so nothing to track you).
 export const FONTS = [
@@ -122,6 +124,15 @@ export async function applyChat(chatLook, look) {
   const key = own ? "ui:chat:" + chatLook.key : "ui:chat";
   layer.style.background = await background(style, key);
   const anim = chatLook && chatLook.anim && chatLook.anim !== "default" ? chatLook.anim : look.anim || "none";
+  const scene = Bgfx.isScene(anim);
+  if (scene) {
+    layer.dataset.anim = anim;
+    if (!layer.querySelector("canvas.bgfx")) layer.textContent = "";
+    if (!Bgfx.start(layer, anim)) layer.dataset.anim = "aurora"; // no WebGL here: a CSS look instead
+    layer.classList.toggle("dark-bg", !Bgfx.LIGHT_SCENES.has(anim));
+    return;
+  }
+  Bgfx.stop();
   if (layer.dataset.anim !== anim) {
     layer.dataset.anim = anim;
     layer.textContent = "";
