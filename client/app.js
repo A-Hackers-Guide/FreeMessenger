@@ -2448,8 +2448,31 @@ function applySettings() {
   const root = document.documentElement;
   if (settings.theme === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", settings.theme);
   root.setAttribute("data-size", settings.size);
-  Look.applyLook(settings.look || {});
+  Look.applyLook(settings.look || {}).then(updateLookPreview);
   if (active) applyChatLook(active);
+}
+
+// The little preview in Settings → Look copies the real bars and chat, so a
+// change shows up right there even while Settings covers the app.
+async function updateLookPreview() {
+  const box = $("look-live");
+  if (!box) return;
+  const copy = (from, to) => {
+    if (!from || !to) return;
+    const cs = getComputedStyle(from);
+    to.style.background = cs.backgroundImage !== "none" ? cs.backgroundImage : cs.backgroundColor;
+    to.style.color = cs.color;
+  };
+  copy(document.querySelector("#sidebar > .bar"), box.querySelector(".ll-bar"));
+  copy($("send-form"), box.querySelector(".ll-composer"));
+  const look = settings.look || {};
+  box.querySelector(".ll-chat").style.background = (await Look.background(look.chat, "ui:chat")) || "var(--bg)";
+}
+
+let lookToastTimer = null;
+function lookChanged(what) {
+  clearTimeout(lookToastTimer);
+  lookToastTimer = setTimeout(() => toast(`${what} applied ✓`), 120);
 }
 applySettings();
 
@@ -2518,11 +2541,13 @@ function editDefaultChat() {
 function usePreset(name) {
   const preset = Look.PRESETS[name];
   if (!preset) return;
+  lookChanged(`"${preset[0]}" theme`);
   const keep = settings.look || {};
   settings.look = Object.assign(JSON.parse(JSON.stringify(preset[1])), { font: keep.font, bubble: keep.bubble });
   settings.look.preset = name;
   store.set("settings", settings);
   applySettings();
+  fillLookControls();
 }
 
 function fillLookControls() {
@@ -2565,8 +2590,8 @@ function setLook(key, value) {
   store.set("settings", settings);
   applySettings();
 }
-$("set-font").onchange = () => setLook("font", $("set-font").value);
-$("set-bubble").onchange = () => setLook("bubble", $("set-bubble").value);
+$("set-font").onchange = () => { setLook("font", $("set-font").value); lookChanged("Font"); };
+$("set-bubble").onchange = () => { setLook("bubble", $("set-bubble").value); lookChanged("Bubble shape"); };
 $("set-mine").oninput = () => setLook("mine", $("set-mine").value);
 $("set-theirs").oninput = () => setLook("theirs", $("set-theirs").value);
 $("set-colors-reset").onclick = () => { setLook("mine"); setLook("theirs"); fillLookControls(); };
@@ -2874,6 +2899,7 @@ function openSettings() {
   fillLookControls();
   fillPrivacyControls();
   openDialog($("settings-dialog"));
+  updateLookPreview();
 }
 
 function saveSettings() {

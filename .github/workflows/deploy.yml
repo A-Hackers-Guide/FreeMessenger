@@ -59,6 +59,15 @@ jobs:
           npm ci
           npm run build
           rm -rf node_modules
+      - name: Stamp this version on the page's files
+        # Browsers keep saved copies of style.css and app.min.js. Asking for
+        # them by version means a new page never runs with old code or styles.
+        working-directory: client
+        run: |
+          v="${GITHUB_SHA::10}"
+          sed -i -e "s#href=\"style.css\"#href=\"style.css?v=$v\"#" -e "s#src=\"app.min.js\"#src=\"app.min.js?v=$v\"#" index.html
+          sed -i -e "s#\"style.css\", \"app.min.js\"#\"style.css?v=$v\", \"app.min.js?v=$v\"#" -e "s#freemessenger-v[0-9]*#freemessenger-$v#" sw.js
+          grep -n "v=$v" index.html sw.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

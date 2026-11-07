@@ -2,7 +2,7 @@
 // and shows notifications the relay sends while the site is closed.
 // Only browsers new enough to have service workers run this file.
 
-const CACHE = "freemessenger-v7";
+const CACHE = "freemessenger-v8";
 
 // Do Not Disturb hours, saved by the app in IndexedDB.
 function dndNow() {
@@ -120,7 +120,9 @@ self.addEventListener("fetch", (e) => {
   }
   if (req.method !== "GET" || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    fetch(req)
+    // Always ask the server whether there's a newer copy (a cheap check when
+    // nothing changed), so an update never mixes old and new files.
+    fetch(req, { cache: "no-cache" })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

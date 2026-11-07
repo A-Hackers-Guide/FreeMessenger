@@ -245,7 +245,7 @@
 
   <dialog id="settings-dialog">
     <h2>Settings</h2>
-    <label class="setting"><span>Theme</span>
+    <label class="setting"><span>Light or dark</span>
       <select id="set-theme"><option value="system">Match my device</option><option value="light">Light</option><option value="dark">Dark</option></select>
     </label>
     <label class="setting"><span>Text size</span>
@@ -259,7 +259,15 @@
     <label class="setting"><span>Get my old messages from the server (for a new browser)</span><button type="button" id="history-btn" class="ghost small">Download</button></label>
     <label class="setting"><span>Change my username (once a month)</span><button type="button" id="rename-btn" class="ghost small">Change</button></label>
     <h3 class="settings-head">Look</h3>
-    <label class="setting"><span>Theme</span><select id="set-preset"></select></label>
+    <div id="look-live" class="look-live" aria-hidden="true">
+      <div class="ll-bar">Top bar</div>
+      <div class="ll-chat">
+        <span class="ll-theirs">Hi! 👋</span>
+        <span class="ll-mine">Looks great ✨</span>
+      </div>
+      <div class="ll-composer">Message bar</div>
+    </div>
+    <label class="setting"><span>Color theme</span><select id="set-preset"></select></label>
     <label class="setting"><span>Accent color</span><input type="color" id="set-accent"></label>
     <label class="setting"><span>Font</span><select id="set-font"></select></label>
     <label class="setting"><span>Message bubbles</span><select id="set-bubble"></select></label>
