@@ -608,3 +608,24 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .gcall-grid[data-size="big"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); grid-auto-rows: minmax(100px, 1fr); }
 .gcall-grid[data-size="big"] .gtile b { width: 56px; height: 56px; font-size: 26px; }
 .big-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Settings sits at the side on wide screens and keeps the app bright behind
+   it, so look changes are visible as you make them. */
+#settings-dialog::backdrop { background: rgba(0, 0, 0, .12); }
+@media (min-width: 900px) {
+  #settings-dialog { margin: 16px 16px 16px auto; max-height: calc(100vh - 32px); }
+}
+.look-live { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 6px 0 4px; font-size: 13px; }
+.ll-bar { padding: 8px 10px; font-weight: 700; background: var(--panel); }
+.ll-chat { display: grid; gap: 6px; padding: 10px; background: var(--bg); }
+.ll-chat span { max-width: 70%; padding: 6px 10px; border-radius: 14px; }
+.ll-theirs { justify-self: start; background: var(--theirs); color: var(--theirs-text); }
+.ll-mine { justify-self: end; background: var(--mine); color: var(--mine-text); }
+:root[data-bubble="pill"] .look-live .ll-chat span { border-radius: 20px; }
+:root[data-bubble="square"] .look-live .ll-chat span { border-radius: 3px; }
+:root[data-bubble="soft"] .look-live .ll-chat span { border-radius: 8px; }
+:root[data-bubble="leaf"] .ll-mine { border-radius: 16px 4px 16px 16px; }
+:root[data-bubble="leaf"] .ll-theirs { border-radius: 4px 16px 16px 16px; }
+:root[data-bubble="outline"] .ll-mine { background: transparent; color: var(--text); border: 2px solid var(--mine); }
+:root[data-bubble="outline"] .ll-theirs { background: transparent; color: var(--text); border: 2px solid var(--muted); }
+.ll-composer { padding: 8px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); }
