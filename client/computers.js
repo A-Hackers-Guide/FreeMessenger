@@ -1,15 +1,19 @@
 // Remote computer access: linking, sessions, file transfer, AI connectors
 
+const api = globalThis.fm_api || (async () => { throw new Error("API not initialized"); });
+
 export const Computers = {
   computers: {},
   sessions: {},
   fileTransfers: {},
   aiRequests: {},
+  currentUser: null, // Set by app.js
 
   // Computer linking
   async linkComputer(username, computer_id, hostname) {
     const res = await fetch("/api/computer/register", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, computer_id, hostname, platform: navigator.platform })
     });
     if (!res.ok) throw new Error((await res.json()).error);
@@ -18,9 +22,11 @@ export const Computers = {
   },
 
   async requestAccess(target_username, computer_id) {
+    if (!this.currentUser) throw new Error("Not authenticated");
     const res = await fetch(`/api/computer/access/${target_username}/${computer_id}`, {
       method: "POST",
-      body: JSON.stringify({ requester: username })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requester: this.currentUser })
     });
     if (!res.ok) throw new Error("Access request failed");
     return await res.json();

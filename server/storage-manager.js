@@ -3,7 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync } from "node:child_process"; // For df/Get-Volume only
 
 const SERVICES_DIR = path.join(process.env.HOME || process.env.USERPROFILE, ".freemessenger-services");
 const WARN_THRESHOLD = 0.1; // Warn when <10% free space
@@ -27,7 +27,8 @@ export async function getDiskSpace() {
       }
     } else {
       try {
-        const output = execSync(`df -B1 ${SERVICES_DIR || process.env.HOME} | tail -1`).toString();
+        const dir = SERVICES_DIR || process.env.HOME || "/";
+        const output = execSync(`df -B1 "${dir}" | tail -1`).toString();
         const parts = output.split(/\s+/);
         totalBytes = Number(parts[1]);
         freeBytes = Number(parts[3]);
@@ -55,6 +56,30 @@ export async function getDiskSpace() {
   }
 }
 
+// Calculate directory size recursively
+function getDirSize(dir) {
+  let size = 0;
+  try {
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      try {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          size += getDirSize(filePath);
+        } else {
+          size += stat.size;
+        }
+      } catch (e) {
+        // Skip files we can't stat
+      }
+    }
+  } catch (e) {
+    // Skip directories we can't read
+  }
+  return size;
+}
+
 // Get service storage usage
 export function getServiceStorage() {
   const usage = {};
@@ -69,10 +94,7 @@ export function getServiceStorage() {
 
   for (const [name, dir] of Object.entries(serviceDirs)) {
     try {
-      if (fs.existsSync(dir)) {
-        const size = execSync(`du -sb "${dir}" 2>/dev/null | awk '{print $1}'`).toString().trim();
-        usage[name] = Number(size) || 0;
-      }
+      usage[name] = fs.existsSync(dir) ? getDirSize(dir) : 0;
     } catch (e) {
       usage[name] = 0;
     }
