@@ -9,6 +9,7 @@ import * as Relays from "./relays.js";
 import * as Look from "./look.js";
 import * as Admin from "./admin.js";
 import * as Browser from "./browser.js";
+import * as Computers from "./computers.js";
 import { EMOJI, STICKERS } from "./emoji.js";
 import * as GroupCall from "./groupcall.js";
 import * as Stories from "./stories.js";
