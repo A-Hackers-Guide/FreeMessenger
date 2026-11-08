@@ -211,7 +211,12 @@ async function stunOverTcp(host, port) {
 
 async function sync(request, env) {
   if (!env.PRIMARY_KEY) return json({ error: "sync not set up" }, 501);
-  const key = typeof env.PRIMARY_KEY === "string" ? JSON.parse(env.PRIMARY_KEY) : env.PRIMARY_KEY;
+  let key;
+  try {
+    key = typeof env.PRIMARY_KEY === "string" ? JSON.parse(env.PRIMARY_KEY) : env.PRIMARY_KEY;
+  } catch (e) {
+    return json({ error: "Invalid PRIMARY_KEY config" }, 500);
+  }
   const body = await openSync(key, await request.text());
   if (!body) return json({ error: "bad signature" }, 403);
 
@@ -295,7 +300,14 @@ export class User {
     }
     if (url.pathname === "/old-name") return json({ taken: !!(await s.get("o:" + url.searchParams.get("n"))) });
     if (url.pathname === "/config") return json({ admins: (await s.get("admins")) || [], turn: await s.get("turn"), signupMode: (await s.get("signupMode")) || "open" });
-    const body = JSON.parse(await request.text() || "{}");
+
+    let body;
+    try {
+      body = JSON.parse(await request.text() || "{}");
+    } catch (e) {
+      return json({ error: "bad json" }, 400);
+    }
+
     if (url.pathname === "/set") {
       if (typeof body.primary === "string" && /^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1):\d+)$/i.test(body.primary)) await s.put("primary", { url: body.primary, ts: Date.now() });
       if (Array.isArray(body.admins)) await s.put("admins", body.admins.filter((n) => USERNAME.test(n)).slice(0, 10));
@@ -335,7 +347,13 @@ export class User {
     if (["/primary", "/config", "/set", "/mark", "/take-dirty", "/old-name"].includes(url.pathname)) return this.registryFetch(url, request);
 
     if (url.pathname === "/register") {
-      const { username, sigPub, ecdhPub, ip } = JSON.parse(await request.text());
+      let data;
+      try {
+        data = JSON.parse(await request.text());
+      } catch (e) {
+        return json({ error: "bad json" }, 400);
+      }
+      const { username, sigPub, ecdhPub, ip } = data;
       if (await this.ctx.storage.get("profile")) return json({ error: "That username is taken" }, 409);
       await this.ctx.storage.put("profile", { username, sigPub, ecdhPub, created: Date.now(), ip, seen: Date.now(), origin: "cf" });
       this.markDirty();
@@ -349,11 +367,29 @@ export class User {
       return json({ username: p.username, sigPub: p.sigPub, ecdhPub: p.ecdhPub, profile: p.info || {} });
     }
 
-    if (url.pathname === "/deliver") return this.deliver(JSON.parse(await request.text()));
+    if (url.pathname === "/deliver") {
+      try {
+        return this.deliver(JSON.parse(await request.text()));
+      } catch (e) {
+        return json({ error: "bad json" }, 400);
+      }
+    }
     if (url.pathname === "/vapid-public") return json({ key: (await this.vapidKeys()).publicKey });
     if (url.pathname === "/vapid-private") return json(await this.vapidKeys());
-    if (url.pathname === "/sync-in") return this.syncIn(JSON.parse(await request.text()));
-    if (url.pathname === "/sync-out") return this.syncOut(JSON.parse(await request.text()));
+    if (url.pathname === "/sync-in") {
+      try {
+        return this.syncIn(JSON.parse(await request.text()));
+      } catch (e) {
+        return json({ error: "bad json" }, 400);
+      }
+    }
+    if (url.pathname === "/sync-out") {
+      try {
+        return this.syncOut(JSON.parse(await request.text()));
+      } catch (e) {
+        return json({ error: "bad json" }, 400);
+      }
+    }
 
     if (url.pathname === "/http") {
       let msg;
