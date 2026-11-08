@@ -46,7 +46,9 @@ export function setupServiceEndpoints(app) {
 
   // Health check for a service
   app.get("/api/service/:name/health", (req, res) => {
-    const status = SM.getServiceStatus(req.params.name);
+    const name = req.params.name;
+    if (!isValidService(name)) return res.status(404).json({ error: "Service not found" });
+    const status = SM.getServiceStatus(name);
     if (!status) return res.status(404).json({ error: "Service not found" });
     res.json({ ...status });
   });

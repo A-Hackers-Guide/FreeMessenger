@@ -63,24 +63,49 @@ async function showApprovalDialog(requester, computerName) {
   try {
     if (PLATFORM === "darwin") {
       // macOS: osascript
-      const msg = `${requester} wants to access your computer "${computerName}"`;
-      const { stdout } = await execAsync(
-        `osascript -e 'display dialog "${msg}" buttons {"Deny", "Allow"} default button 2 with icon caution' 2>/dev/null | grep -o "Allow"`
-      );
-      return stdout.includes("Allow");
+      // Escape quotes in the message
+      const safeRequester = (requester || "Someone").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const safeComputerName = (computerName || "your computer").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const msg = `${safeRequester} wants to access your computer "${safeComputerName}"`;
+      try {
+        const { stdout } = await execAsync(
+          `osascript -e 'display dialog "${msg}" buttons {"Deny", "Allow"} default button 2 with icon caution' 2>/dev/null | grep -o "Allow"`
+        );
+        return stdout.includes("Allow");
+      } catch {
+        return false;
+      }
     } else if (PLATFORM === "win32") {
       // Windows: PowerShell dialog
-      const msg = `${requester} wants to access your computer. Allow?`;
-      const script = `
-        [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null;
-        $result = [System.Windows.Forms.MessageBox]::Show('${msg}', 'FreeMessenger', 4);
-        exit $result
-      `;
+      const safeRequester = (requester || "Someone").replace(/'/g, "''");
+      const msg = `${safeRequester} wants to access your computer. Allow?`;
       try {
-        await execAsync(`powershell -NoProfile "${script}"`);
-        return true; // If it didn't throw, user clicked Yes
+        const { stdout } = await execAsync(`powershell -NoProfile "
+          [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null;
+          [System.Windows.Forms.MessageBox]::Show('${msg}', 'FreeMessenger', 4)
+        "`);
+        // MessageBox returns 6 for Yes, 7 for No
+        return stdout.trim() === "6";
       } catch {
-        return false; // User clicked No or closed dialog
+        return false;
+      }
+    } else if (PLATFORM === "linux") {
+      // Linux: try zenity or kdialog
+      const safeRequester = (requester || "Someone").replace(/'/g, "'\\''");
+      const msg = `${safeRequester} wants to access your computer.`;
+      try {
+        // Try zenity first (GNOME)
+        await execAsync(`zenity --question --title="FreeMessenger" --text="${msg}" 2>/dev/null`);
+        return true;
+      } catch (e1) {
+        try {
+          // Fall back to kdialog (KDE)
+          await execAsync(`kdialog --yesno "${msg}" --title "FreeMessenger" 2>/dev/null`);
+          return true;
+        } catch (e2) {
+          // No dialog available, deny
+          return false;
+        }
       }
     }
     return false;
