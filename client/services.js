@@ -1,6 +1,11 @@
 // Optional services: Moonlight (gaming), Jellyfin/Plex (media), Audiobookshelf (audio)
 // All run locally, accessed through unified dashboard
 
+import crypto from "node:crypto";
+
+// Stub - will be set by app.js when imported
+const api = globalThis.fm_api || (async () => { throw new Error("API not initialized"); });
+
 export const Services = {
   // Service definitions
   available: {
