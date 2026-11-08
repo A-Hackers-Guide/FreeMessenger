@@ -23,9 +23,7 @@ const HOSTNAME = process.env.FM_HOSTNAME || os.hostname();
 const PLATFORM = process.platform; // darwin, win32, linux
 const MAX_SESSIONS = 5;
 
-let remoteSession = null;
-let screenInterval = null;
-let activeSessions = 0;
+const activeSessions = new Map(); // Map of sessionId -> session object
 
 // Screen capture (platform-specific)
 async function captureScreen() {
@@ -145,6 +143,7 @@ async function sendInput(input) {
 // Main TCP server
 const server = net.createServer(async (socket) => {
   let buffer = "";
+  let currentSessionId = null;
   socket.setTimeout(300000); // 5 min timeout
 
   socket.on("data", async (data) => {
@@ -160,21 +159,29 @@ const server = net.createServer(async (socket) => {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        await handleMessage(msg, socket);
+        await handleMessage(msg, socket, currentSessionId, (sid) => { currentSessionId = sid; });
       } catch (e) {
-        socket.write(JSON.stringify({ error: "Invalid message" }) + "\n");
+        if (socket.writable) socket.write(JSON.stringify({ error: "Invalid message" }) + "\n");
       }
     }
   });
 
   socket.on("end", () => {
-    if (remoteSession?.socket === socket) endSession();
+    if (currentSessionId) {
+      endSession(currentSessionId);
+    }
+  });
+
+  socket.on("error", () => {
+    if (currentSessionId) {
+      endSession(currentSessionId);
+    }
   });
 });
 
-async function handleMessage(msg, socket) {
+async function handleMessage(msg, socket, currentSessionId, setSid) {
   if (msg.type === "request-session") {
-    if (activeSessions >= MAX_SESSIONS) {
+    if (activeSessions.size >= MAX_SESSIONS) {
       socket.write(JSON.stringify({ type: "session-denied", reason: "too-many-sessions" }) + "\n");
       return;
     }
@@ -183,38 +190,46 @@ async function handleMessage(msg, socket) {
 
     if (approved) {
       const sessionId = crypto.randomBytes(8).toString("hex");
-      remoteSession = { id: sessionId, requester: msg.requester, socket, started: Date.now() };
-      activeSessions++;
-      socket.write(JSON.stringify({ type: "session-active", sessionId }) + "\n");
-
-      // Screen capture loop
-      screenInterval = setInterval(async () => {
+      const screenInterval = setInterval(async () => {
         try {
           const screenshot = await captureScreen();
-          if (screenshot) {
+          if (screenshot && socket.writable) {
             socket.write(JSON.stringify({ type: "screen", data: screenshot.slice(0, 100000) }) + "\n");
           }
         } catch (e) {
           // Silently fail
         }
       }, 500);
+
+      activeSessions.set(sessionId, {
+        id: sessionId,
+        requester: msg.requester,
+        socket,
+        started: Date.now(),
+        screenInterval
+      });
+      setSid(sessionId);
+      socket.write(JSON.stringify({ type: "session-active", sessionId }) + "\n");
     } else {
       socket.write(JSON.stringify({ type: "session-denied" }) + "\n");
     }
-  } else if (msg.type === "input" && remoteSession) {
-    await sendInput(msg.input);
-    socket.write(JSON.stringify({ type: "input-ack" }) + "\n");
-  } else if (msg.type === "end-session" && remoteSession?.id === msg.sessionId) {
-    endSession();
+  } else if (msg.type === "input" && currentSessionId) {
+    const sess = activeSessions.get(currentSessionId);
+    if (sess && msg.input && typeof msg.input === "object") {
+      await sendInput(msg.input);
+      if (sess.socket.writable) sess.socket.write(JSON.stringify({ type: "input-ack" }) + "\n");
+    }
+  } else if (msg.type === "end-session" && currentSessionId === msg.sessionId) {
+    endSession(currentSessionId);
     socket.write(JSON.stringify({ type: "session-ended" }) + "\n");
   }
 }
 
-function endSession() {
-  if (remoteSession) {
-    clearInterval(screenInterval);
-    remoteSession = null;
-    activeSessions--;
+function endSession(sessionId) {
+  const sess = activeSessions.get(sessionId);
+  if (sess) {
+    clearInterval(sess.screenInterval);
+    activeSessions.delete(sessionId);
   }
 }
 
@@ -228,37 +243,46 @@ async function registerWithRelay() {
         if (res.statusCode === 200) {
           console.log(`[FM Service] Registered: ${USERNAME}@${HOSTNAME}`);
         }
+        res.resume(); // Drain response
       }
     );
+    req.on("error", () => {}); // Attach before sending
     req.write(body);
     req.end();
-    req.on("error", () => {});
   } catch (e) {
     // Silently fail
   }
 }
 
 // Heartbeat
-setInterval(async () => {
+const heartbeatInterval = setInterval(async () => {
   try {
     const body = JSON.stringify({ username: USERNAME, computer_id: COMPUTER_ID });
-    const req = http.request({ hostname: RELAY_HOST, port: RELAY_PORT, path: "/api/computer/active", method: "POST" }, (res) => {});
+    const req = http.request(
+      { hostname: RELAY_HOST, port: RELAY_PORT, path: "/api/computer/active", method: "POST" },
+      (res) => { res.resume(); } // Drain response
+    );
+    req.on("error", () => {}); // Attach before sending
     req.write(body);
     req.end();
-    req.on("error", () => {});
   } catch (e) {
     // Silently fail
   }
 }, 30000);
 
+// Clean up on exit
+process.on("SIGTERM", () => {
+  clearInterval(heartbeatInterval);
+  server.close(() => process.exit(0));
+});
+
+process.on("SIGINT", () => {
+  clearInterval(heartbeatInterval);
+  server.close(() => process.exit(0));
+});
+
 // Start
 server.listen(SERVICE_PORT, "127.0.0.1", () => {
   console.log(`[FM Service] Running (${USERNAME}@${HOSTNAME}, ${PLATFORM})`);
   registerWithRelay();
-});
-
-process.on("SIGTERM", () => {
-  endSession();
-  server.close();
-  process.exit(0);
 });

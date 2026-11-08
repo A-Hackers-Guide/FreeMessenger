@@ -133,7 +133,14 @@ export const Services = {
   async uninstallService(name) {
     await this.stopService(name);
     delete this.installed[name];
-    localStorage.setItem("fm.services", JSON.stringify(this.installed));
+    try {
+      localStorage.setItem("fm.services", JSON.stringify(this.installed));
+    } catch (e) {
+      console.error(`Failed to save services config: ${e.message}`);
+      // Restore the service on quota error
+      this.installed[name] = config;
+      throw new Error("Storage quota exceeded");
+    }
     return true;
   },
 
@@ -141,7 +148,14 @@ export const Services = {
   markInstalled(name, config) {
     this.installed[name] = config;
     this.running[name] = false;
-    localStorage.setItem("fm.services", JSON.stringify(this.installed));
+    try {
+      localStorage.setItem("fm.services", JSON.stringify(this.installed));
+    } catch (e) {
+      console.error(`Failed to save services config: ${e.message}`);
+      // Remove on storage error
+      delete this.installed[name];
+      throw new Error("Storage quota exceeded");
+    }
   }
 };
 
