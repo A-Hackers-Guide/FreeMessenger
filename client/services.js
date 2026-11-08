@@ -98,6 +98,7 @@ export const Services = {
     try {
       const res = await fetch(`/api/service/start`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ service: name })
       });
       if (res.ok) {
@@ -115,6 +116,7 @@ export const Services = {
     try {
       const res = await fetch(`/api/service/stop`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ service: name })
       });
       if (res.ok) {

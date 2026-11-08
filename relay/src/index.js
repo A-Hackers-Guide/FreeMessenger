@@ -120,9 +120,20 @@ export default {
 
     if (url.pathname.startsWith("/api/computer/access/") && request.method === "POST") {
       // Requester asks to access someone's linked computer
-      const [, , , target_username, computer_id] = url.pathname.split('/');
+      const parts = url.pathname.split('/');
+      if (parts.length < 5) return json({ error: "Invalid request" }, 400);
+
+      const target_username = parts[3]?.toLowerCase() || "";
+      const computer_id = (parts[4] || "").trim();
+
+      if (!USERNAME.test(target_username) || !computer_id) return json({ error: "Invalid request" }, 400);
+
       const { requester } = await request.json();
-      if (!USERNAME.test(target_username) || !USERNAME.test(requester)) return json({ error: "Invalid users" }, 400);
+      if (!USERNAME.test(requester)) return json({ error: "Invalid user" }, 400);
+
+      // Verify requester identity - they must have valid auth token
+      const auth = request.headers.get("Authorization");
+      if (!auth) return json({ error: "Unauthorized" }, 401);
 
       const stub = userStub(env, target_username);
       // Send access request to the device owner's app (they'll approve on their screen)

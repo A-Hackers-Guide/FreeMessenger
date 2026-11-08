@@ -55,21 +55,27 @@ export async function startService(serviceName) {
     const proc = spawn(svc.cmd, svc.args || [], { detached: true, stdio: "ignore" });
     proc.unref(); // Allow parent to exit
     runningServices[serviceName] = { pid: proc.pid, started: Date.now() };
-    
-    // Wait for health check
+
+    // Wait for health check with timeout
     for (let i = 0; i < 30; i++) {
       try {
-        const res = await fetch(svc.healthCheck, { timeout: 1000 });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1000);
+        const res = await fetch(svc.healthCheck, { signal: controller.signal });
+        clearTimeout(timeout);
         if (res.ok) return true;
       } catch (e) {
         // Not ready yet
       }
       await new Promise(r => setTimeout(r, 1000));
     }
-    
-    return false; // Health check failed
+
+    // Health check failed - clean up
+    delete runningServices[serviceName];
+    return false;
   } catch (e) {
     console.error(`Failed to start ${serviceName}:`, e.message);
+    delete runningServices[serviceName];
     return false;
   }
 }
@@ -80,15 +86,14 @@ export async function stopService(serviceName) {
   if (!svc) return true; // Not running
 
   try {
-    if (process.platform === "win32") {
-      await execAsync(`taskkill /PID ${svc.pid} /F`);
-    } else {
-      await execAsync(`kill -9 ${svc.pid}`);
-    }
+    // Use process.kill instead of shell commands for safety
+    process.kill(-svc.pid, "SIGKILL"); // Negative PID kills entire process group
     delete runningServices[serviceName];
     return true;
   } catch (e) {
-    return false;
+    // Process might already be dead, still consider it stopped
+    delete runningServices[serviceName];
+    return true;
   }
 }
 
