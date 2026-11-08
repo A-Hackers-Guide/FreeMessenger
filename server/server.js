@@ -1290,6 +1290,38 @@ const server = http.createServer(async (req, res) => {
       return proxyResource(target, base, res);
     }
 
+    // ---- Remote computer access ----
+    if (url.pathname === "/api/computer/register" && req.method === "POST") {
+      const body = await readBody(req, 2048);
+      const { username, computer_id, hostname, platform } = JSON.parse(body);
+      if (!S.USERNAME.test(username) || !computer_id || !hostname) return reply(res, 400, { error: "Invalid request" });
+
+      // Store linked computer in local database
+      const acc = getAccount(username);
+      if (!acc) return reply(res, 404, { error: "Account not found" });
+
+      const computers = acc.computers || {};
+      computers[computer_id] = { hostname, platform, linked_at: Date.now(), active: true };
+      q("UPDATE accounts SET computers = ? WHERE username = ?").run(JSON.stringify(computers), username);
+
+      // Sync this to the backup relay
+      kvSet("computer:" + username + ":" + computer_id, { hostname, platform, linked_at: Date.now() });
+
+      return reply(res, 200, { ok: true, computer_id });
+    }
+
+    if (url.pathname === "/api/computer/active" && req.method === "POST") {
+      // Service pings to say it's running
+      const body = await readBody(req, 512);
+      const { username, computer_id } = JSON.parse(body);
+      const computers = JSON.parse(getAccount(username)?.computers || "{}");
+      if (computers[computer_id]) {
+        computers[computer_id].last_seen = Date.now();
+        q("UPDATE accounts SET computers = ? WHERE username = ?").run(JSON.stringify(computers), username);
+      }
+      return reply(res, 200, { ok: true });
+    }
+
     if (url.pathname === "/" || url.pathname === "/api") return reply(res, 200, { ok: true, service: "FreeMessenger relay", primary: true });
     return reply(res, 404, { error: "not found" });
   } catch (e) {

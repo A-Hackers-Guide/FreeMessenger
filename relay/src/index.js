@@ -107,6 +107,42 @@ export default {
 
     if (url.pathname === "/api/sync" && request.method === "POST") return sync(request, env);
 
+    // ---- Remote computer access ----
+    if (url.pathname === "/api/computer/link" && request.method === "POST") {
+      const { username, computer_id, hostname, platform } = await request.json();
+      if (!USERNAME.test(username) || !computer_id || !hostname) return json({ error: "Invalid request" }, 400);
+      const reg = registry(env);
+      const stub = userStub(env, username);
+      // Store linked computer info in the relay and notify the user
+      await post(stub, "/computer-linked", { computer_id, hostname, platform, linked_at: Date.now() });
+      return json({ ok: true });
+    }
+
+    if (url.pathname.startsWith("/api/computer/access/") && request.method === "POST") {
+      // Requester asks to access someone's linked computer
+      const [, , , target_username, computer_id] = url.pathname.split('/');
+      const { requester } = await request.json();
+      if (!USERNAME.test(target_username) || !USERNAME.test(requester)) return json({ error: "Invalid users" }, 400);
+
+      const stub = userStub(env, target_username);
+      // Send access request to the device owner's app (they'll approve on their screen)
+      await post(stub, "/remote-access-request", {
+        requester,
+        computer_id,
+        requested_at: Date.now(),
+        request_id: crypto.randomUUID()
+      });
+      return json({ ok: true, waiting: true });
+    }
+
+    if (url.pathname === "/api/computer/sessions" && request.method === "GET") {
+      // Admin gets list of all active remote sessions (for monitoring)
+      const auth = await basicAuth(env, request);
+      if (!auth || auth.username !== "admin") return json({ error: "Unauthorized" }, 401);
+      // Fetch from user stub (sessions are stored per user)
+      return json({ sessions: [] }); // TODO: aggregate from all user stubs
+    }
+
     if (url.pathname === "/" || url.pathname === "/api") return json({ ok: true, service: "FreeMessenger relay", primary: false });
     return json({ error: "not found" }, 404);
   },
