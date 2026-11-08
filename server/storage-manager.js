@@ -93,10 +93,10 @@ export async function cleanCache(service) {
   if (!dir || !fs.existsSync(dir)) return false;
 
   try {
-    if (process.platform === "win32") {
-      execSync(`powershell -NoProfile "Remove-Item '${dir}\\*' -Recurse -Force -ErrorAction SilentlyContinue"`);
-    } else {
-      execSync(`rm -rf "${dir}"/*`);
+    // Use fs.rmSync instead of shell commands to avoid injection attacks
+    for (const file of fs.readdirSync(dir)) {
+      const filePath = path.join(dir, file);
+      fs.rmSync(filePath, { recursive: true, force: true });
     }
     return true;
   } catch (e) {
@@ -111,22 +111,28 @@ export async function cleanOldTranscodes(service = "jellyfin", olderThanDays = 7
   };
 
   const dir = transcodeDirs[service];
-  if (!dir || !fs.existsSync(dir)) return 0;
+  if (!dir) return 0;
 
   const cutoffTime = Date.now() - (olderThanDays * 24 * 60 * 60 * 1000);
   let removed = 0;
 
   try {
+    if (!fs.existsSync(dir)) return 0;
+
     for (const file of fs.readdirSync(dir)) {
-      const filePath = path.join(dir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoffTime) {
-        fs.rmSync(filePath);
-        removed++;
+      try {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs < cutoffTime) {
+          fs.rmSync(filePath, { recursive: true, force: true });
+          removed++;
+        }
+      } catch (e) {
+        // Continue on individual file errors
       }
     }
   } catch (e) {
-    // Continue on error
+    // Continue on directory read errors
   }
 
   return removed;
@@ -140,15 +146,21 @@ export async function compressMetadata(service) {
   };
 
   const dir = dbPaths[service];
-  if (!dir || !fs.existsSync(dir)) return false;
+  if (!dir) return false;
 
   try {
-    // Simple: remove thumbnails and old art
+    if (!fs.existsSync(dir)) return false;
+
+    // Remove thumbnails and old art
     const thumbDir = path.join(dir, "thumbnails");
     if (fs.existsSync(thumbDir)) {
-      execSync(process.platform === "win32"
-        ? `powershell -NoProfile "Remove-Item '${thumbDir}\\*' -Recurse -Force"`
-        : `rm -rf "${thumbDir}"/*`);
+      for (const file of fs.readdirSync(thumbDir)) {
+        try {
+          fs.rmSync(path.join(thumbDir, file), { recursive: true, force: true });
+        } catch (e) {
+          // Continue on error
+        }
+      }
     }
     return true;
   } catch (e) {

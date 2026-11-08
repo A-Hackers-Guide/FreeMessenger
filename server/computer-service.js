@@ -94,34 +94,45 @@ async function showApprovalDialog(requester, computerName) {
 // Send input (mouse/keyboard)
 async function sendInput(input) {
   try {
+    // Validate input coordinates
+    if (typeof input.x !== 'number' || typeof input.y !== 'number') return;
+    if (input.x < 0 || input.y < 0 || input.x > 65535 || input.y > 65535) return;
+
     if (input.type === "mouse-move") {
       if (PLATFORM === "darwin") {
-        await execAsync(`osascript -e 'tell application "System Events" to set mouse position to {${input.x}, ${input.y}}'`);
+        await execAsync(`osascript -e 'tell application "System Events" to set mouse position to {${Math.floor(input.x)}, ${Math.floor(input.y)}}'`);
       } else if (PLATFORM === "win32") {
+        const x = Math.floor(input.x);
+        const y = Math.floor(input.y);
         const script = `
           Add-Type -AssemblyName System.Windows.Forms;
-          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${input.x}, ${input.y})
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y})
         `;
         await execAsync(`powershell -NoProfile "${script}"`);
       }
     } else if (input.type === "mouse-click") {
       if (PLATFORM === "darwin") {
-        await execAsync(`osascript -e 'tell application "System Events" to click at {${input.x}, ${input.y}}'`);
+        await execAsync(`osascript -e 'tell application "System Events" to click at {${Math.floor(input.x)}, ${Math.floor(input.y)}}'`);
       } else if (PLATFORM === "win32") {
+        const x = Math.floor(input.x);
+        const y = Math.floor(input.y);
         const script = `
           Add-Type -AssemblyName System.Windows.Forms;
-          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${input.x}, ${input.y});
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y});
           [System.Windows.Forms.SendKeys]::SendWait('{LBUTTON}')
         `;
         await execAsync(`powershell -NoProfile "${script}"`);
       }
     } else if (input.type === "key") {
+      if (typeof input.key !== 'string' || input.key.length > 100) return;
       if (PLATFORM === "darwin") {
-        await execAsync(`osascript -e 'tell application "System Events" to keystroke "${input.key}"'`);
+        const escaped = input.key.replace(/"/g, '\\"');
+        await execAsync(`osascript -e 'tell application "System Events" to keystroke "${escaped}"'`);
       } else if (PLATFORM === "win32") {
+        const escaped = input.key.replace(/'/g, "''");
         const script = `
           Add-Type -AssemblyName System.Windows.Forms;
-          [System.Windows.Forms.SendKeys]::SendWait('${input.key}')
+          [System.Windows.Forms.SendKeys]::SendWait('${escaped}')
         `;
         await execAsync(`powershell -NoProfile "${script}"`);
       }
@@ -134,8 +145,13 @@ async function sendInput(input) {
 // Main TCP server
 const server = net.createServer(async (socket) => {
   let buffer = "";
+  socket.setTimeout(300000); // 5 min timeout
 
   socket.on("data", async (data) => {
+    if (buffer.length > 1000000) {
+      socket.destroy(); // Prevent unbounded buffer growth
+      return;
+    }
     buffer += data.toString();
     const lines = buffer.split("\n");
     buffer = lines.pop();

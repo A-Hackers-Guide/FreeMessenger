@@ -5,12 +5,18 @@
 
 import * as SM from "./service-manager.js";
 
+const VALID_SERVICES = new Set(["sunshine", "moonlight", "jellyfin", "plex", "audiobookshelf"]);
+
+function isValidService(name) {
+  return typeof name === "string" && VALID_SERVICES.has(name);
+}
+
 export function setupServiceEndpoints(app) {
   // Start a service
   app.post("/api/service/start", async (req, res) => {
     const { service } = req.body;
-    if (!service) return res.status(400).json({ error: "No service specified" });
-    
+    if (!isValidService(service)) return res.status(400).json({ error: "Invalid service" });
+
     const success = await SM.startService(service);
     res.json({ ok: success, status: SM.getServiceStatus(service) });
   });
@@ -18,8 +24,8 @@ export function setupServiceEndpoints(app) {
   // Stop a service
   app.post("/api/service/stop", async (req, res) => {
     const { service } = req.body;
-    if (!service) return res.status(400).json({ error: "No service specified" });
-    
+    if (!isValidService(service)) return res.status(400).json({ error: "Invalid service" });
+
     const success = await SM.stopService(service);
     res.json({ ok: success, status: SM.getServiceStatus(service) });
   });
@@ -27,8 +33,8 @@ export function setupServiceEndpoints(app) {
   // Install a service
   app.post("/api/service/install", async (req, res) => {
     const { service, config } = req.body;
-    if (!service) return res.status(400).json({ error: "No service specified" });
-    
+    if (!isValidService(service)) return res.status(400).json({ error: "Invalid service" });
+
     const success = await SM.installService(service, config);
     res.json({ ok: success });
   });

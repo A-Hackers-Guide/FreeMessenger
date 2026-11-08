@@ -71,7 +71,12 @@ export const Services = {
 
   // Initialize services from saved config
   async init() {
-    this.installed = JSON.parse(localStorage.getItem("fm.services") || "{}");
+    try {
+      this.installed = JSON.parse(localStorage.getItem("fm.services") || "{}");
+    } catch (e) {
+      console.error("Failed to load services config:", e);
+      this.installed = {};
+    }
     await this.checkRunningServices();
   },
 
