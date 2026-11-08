@@ -1,0 +1,49 @@
+// HTTP endpoints for service management (add these to server.js)
+// POST /api/service/start
+// POST /api/service/stop
+// GET /api/services
+
+import * as SM from "./service-manager.js";
+
+export function setupServiceEndpoints(app) {
+  // Start a service
+  app.post("/api/service/start", async (req, res) => {
+    const { service } = req.body;
+    if (!service) return res.status(400).json({ error: "No service specified" });
+    
+    const success = await SM.startService(service);
+    res.json({ ok: success, status: SM.getServiceStatus(service) });
+  });
+
+  // Stop a service
+  app.post("/api/service/stop", async (req, res) => {
+    const { service } = req.body;
+    if (!service) return res.status(400).json({ error: "No service specified" });
+    
+    const success = await SM.stopService(service);
+    res.json({ ok: success, status: SM.getServiceStatus(service) });
+  });
+
+  // Install a service
+  app.post("/api/service/install", async (req, res) => {
+    const { service, config } = req.body;
+    if (!service) return res.status(400).json({ error: "No service specified" });
+    
+    const success = await SM.installService(service, config);
+    res.json({ ok: success });
+  });
+
+  // List all services
+  app.get("/api/services", (req, res) => {
+    res.json({ services: SM.listServices() });
+  });
+
+  // Health check for a service
+  app.get("/api/service/:name/health", (req, res) => {
+    const status = SM.getServiceStatus(req.params.name);
+    if (!status) return res.status(404).json({ error: "Service not found" });
+    res.json({ ...status });
+  });
+}
+
+export default setupServiceEndpoints;
