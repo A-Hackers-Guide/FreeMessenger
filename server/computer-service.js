@@ -21,9 +21,11 @@ const COMPUTER_ID = process.env.FM_COMPUTER_ID || crypto.randomBytes(8).toString
 const USERNAME = process.env.FM_USERNAME || os.userInfo().username;
 const HOSTNAME = process.env.FM_HOSTNAME || os.hostname();
 const PLATFORM = process.platform; // darwin, win32, linux
+const MAX_SESSIONS = 5;
 
 let remoteSession = null;
 let screenInterval = null;
+let activeSessions = 0;
 
 // Screen capture (platform-specific)
 async function captureScreen() {
@@ -96,15 +98,32 @@ async function sendInput(input) {
       if (PLATFORM === "darwin") {
         await execAsync(`osascript -e 'tell application "System Events" to set mouse position to {${input.x}, ${input.y}}'`);
       } else if (PLATFORM === "win32") {
-        await execAsync(`powershell -NoProfile "[System.Windows.Forms.Cursor]::Position = '${input.x},${input.y}'"`);
+        const script = `
+          Add-Type -AssemblyName System.Windows.Forms;
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${input.x}, ${input.y})
+        `;
+        await execAsync(`powershell -NoProfile "${script}"`);
       }
     } else if (input.type === "mouse-click") {
       if (PLATFORM === "darwin") {
         await execAsync(`osascript -e 'tell application "System Events" to click at {${input.x}, ${input.y}}'`);
+      } else if (PLATFORM === "win32") {
+        const script = `
+          Add-Type -AssemblyName System.Windows.Forms;
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${input.x}, ${input.y});
+          [System.Windows.Forms.SendKeys]::SendWait('{LBUTTON}')
+        `;
+        await execAsync(`powershell -NoProfile "${script}"`);
       }
     } else if (input.type === "key") {
       if (PLATFORM === "darwin") {
         await execAsync(`osascript -e 'tell application "System Events" to keystroke "${input.key}"'`);
+      } else if (PLATFORM === "win32") {
+        const script = `
+          Add-Type -AssemblyName System.Windows.Forms;
+          [System.Windows.Forms.SendKeys]::SendWait('${input.key}')
+        `;
+        await execAsync(`powershell -NoProfile "${script}"`);
       }
     }
   } catch (e) {
@@ -139,11 +158,17 @@ const server = net.createServer(async (socket) => {
 
 async function handleMessage(msg, socket) {
   if (msg.type === "request-session") {
+    if (activeSessions >= MAX_SESSIONS) {
+      socket.write(JSON.stringify({ type: "session-denied", reason: "too-many-sessions" }) + "\n");
+      return;
+    }
+
     const approved = await showApprovalDialog(msg.requester, HOSTNAME);
 
     if (approved) {
       const sessionId = crypto.randomBytes(8).toString("hex");
       remoteSession = { id: sessionId, requester: msg.requester, socket, started: Date.now() };
+      activeSessions++;
       socket.write(JSON.stringify({ type: "session-active", sessionId }) + "\n");
 
       // Screen capture loop
@@ -173,6 +198,7 @@ function endSession() {
   if (remoteSession) {
     clearInterval(screenInterval);
     remoteSession = null;
+    activeSessions--;
   }
 }
 

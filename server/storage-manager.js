@@ -15,22 +15,31 @@ export async function getDiskSpace() {
     let totalBytes, freeBytes;
 
     if (process.platform === "win32") {
-      const output = execSync(`powershell -NoProfile "Get-Volume | Where-Object DriveLetter -eq (Split-Path -Qualifier $env:TEMP) | Select-Object Size,SizeRemaining"`).toString();
-      const match = output.match(/(\d+)\s+(\d+)/);
-      if (match) {
-        totalBytes = BigInt(match[1]);
-        freeBytes = BigInt(match[2]);
+      try {
+        const output = execSync(`powershell -NoProfile "Get-Volume | Where-Object DriveLetter -eq (Split-Path -Qualifier $env:TEMP) | Select-Object Size,SizeRemaining"`).toString();
+        const match = output.match(/(\d+)\s+(\d+)/);
+        if (match) {
+          totalBytes = Number(match[1]);
+          freeBytes = Number(match[2]);
+        }
+      } catch (e) {
+        return null;
       }
     } else {
-      const output = execSync(`df -B1 ${SERVICES_DIR || process.env.HOME} | tail -1`).toString();
-      const parts = output.split(/\s+/);
-      totalBytes = BigInt(parts[1]);
-      freeBytes = BigInt(parts[3]);
+      try {
+        const output = execSync(`df -B1 ${SERVICES_DIR || process.env.HOME} | tail -1`).toString();
+        const parts = output.split(/\s+/);
+        totalBytes = Number(parts[1]);
+        freeBytes = Number(parts[3]);
+      } catch (e) {
+        return null;
+      }
     }
 
+    if (!totalBytes || !freeBytes) return null;
     const usedBytes = totalBytes - freeBytes;
-    const usedPercent = Number(usedBytes * 100n / totalBytes) / 100;
-    const freePercent = Number(freeBytes * 100n / totalBytes) / 100;
+    const usedPercent = (usedBytes * 100) / totalBytes;
+    const freePercent = (freeBytes * 100) / totalBytes;
 
     return {
       total: Number(totalBytes),
