@@ -327,6 +327,20 @@
     </div>
   </dialog>
 
+  <dialog id="remote-access-dialog">
+    <h2>Computer Access Request</h2>
+    <p></p>
+    <div class="row">
+      <button type="button" id="remote-deny" class="ghost">Deny</button>
+      <button type="button" id="remote-approve" class="primary">Allow</button>
+    </div>
+  </dialog>
+
+  <div id="remote-banner" style="display:none; position: fixed; top: 0; left: 0; right: 0; background: #f97316; color: white; padding: 8px; text-align: center; z-index: 9999; font-weight: 600;">
+    <span id="remote-banner-text"></span>
+    <button type="button" style="margin-left: 12px; padding: 4px 12px; background: rgba(255,255,255,0.2); border: 1px solid white; color: white; border-radius: 4px; cursor: pointer;" onclick="this.parentElement.style.display='none';">Disconnect</button>
+  </div>
+
   <dialog id="look-dialog">
     <h2 id="look-title">Customize</h2>
     <div id="look-preview" class="look-preview">Aa</div>
