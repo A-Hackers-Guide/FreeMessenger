@@ -49,7 +49,8 @@ Your friend does the same thing in their own browser. That's it.
 | 🔔 **Notifications** | Even when the site is closed (on iPhone and iPad, install the app first) |
 | 📲 **Install it** | ⋯ → **Install app** puts it on your home screen or desktop. It opens even when you're offline. |
 | 🙂 **Profiles** | A profile picture, display name, real name, status and "about" text (⋯ → **My profile**). Tap someone's name in a chat to see theirs. |
-| 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute, block and clear history are in each chat's ⋮ menu. |
+| 🔎 **Find things** | Search all chats, or one chat. Renaming a chat (just for you), mute (for 1 hour, 8 hours, a week or always), block and clear history are in each chat's ⋮ menu. |
+| ⚡ **Quick replies** | Save phrases you send a lot (Settings → **Quick replies**), then type **/** in any chat to pick one. |
 | 🎨 **Make it yours** | Ready-made themes, an accent color, fonts, bubble shapes and colors, and a color, gradient or picture for each bar. Every chat can have its own background and one of 15 animations (aurora, bubbles, stars, snow, hearts, waves, rain, confetti, fireflies, petals, balloons, sparkles, lava lamp, matrix, northern lights). Plus light or dark mode, four text sizes, what Enter does, and read receipts or typing on or off. |
 | 🗂 **Your history anywhere** | Messages are kept on the server, so a new browser can download your old chats (Settings → **Get my old messages**). |
 | ✍️ **Formatting** | **bold**, _italic_, ~strike~, `code`, ||spoilers||, and @mentions that reach you even in muted groups |
