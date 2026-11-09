@@ -15,8 +15,9 @@ No app to install (but you can). No email, phone number or password. Works on ph
 |---|---|
 | **Android** | [Download FreeMessenger.apk](https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest/download/FreeMessenger.apk) and open it (allow installing from your browser if asked). Or in Chrome: ⋮ → **Install app**. |
 | **iPhone / iPad** | Open the site in Safari → **Share** → **Add to Home Screen**. Open it from your home screen to get notifications. |
-| **Mac** | Safari: **File → Add to Dock**. Chrome or Edge: the install icon in the address bar. |
-| **Windows / Linux / ChromeOS** | Chrome or Edge: the install icon in the address bar. |
+| **Mac** | Safari: **File → Add to Dock**. Chrome or Edge: the install icon in the address bar. Or the [.pkg installer](https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest). |
+| **Windows / Linux / ChromeOS** | Chrome or Edge: the install icon in the address bar. Or the [.msi (Windows) or .AppImage (Linux) installer](https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest). |
+| **Run your own home relay** | The **Server** installer for [Windows, Mac or Linux](https://github.com/A-Hackers-Guide/FreeMessenger/releases/latest) sets it up and keeps it running. |
 
 Every version is the same app and updates itself. In the app: ⋯ → **Get the app**.
 
