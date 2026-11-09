@@ -11,6 +11,8 @@
 // this computer is off. See server/README.md.
 
 import http from "node:http";
+import https from "node:https";
+import os from "node:os";
 import nodeCrypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -756,6 +758,14 @@ async function op(a, type, msg, sess) {
     if (msg.action === "whoami") return { super: superUser, user: a.username };
     if (!superUser && !GRANTED_ACTIONS.has(msg.action)) return { error: "Only the owner can do that." };
 
+    if (msg.action === "pc") return pcStatus();
+    if (msg.action === "restart-relay") {
+      event(`Relay restart requested by @${a.username}`);
+      // run.ps1 starts the relay again 5 seconds after it exits.
+      setTimeout(() => process.exit(0), 800);
+      return { ok: true };
+    }
+
     // ---------- owner only: approvals, sessions, bans, admins ----------
     if (msg.action === "security") {
       sweepRequests();
@@ -901,6 +911,57 @@ function accountRow(r) {
     profile: JSON.parse(r.profile || "{}"), sent: counts.n, bytes: counts.bytes, online: isOnline(r.username),
     origin: r.origin, note: r.note || "",
     used: usageOf(r.username), quotaGB: r.quotaGB, quota: quotaBytes(r) === Infinity ? 0 : quotaBytes(r),
+  };
+}
+
+// ---------- this PC: media servers and relay health (admin panel "Your PC") ----------
+
+const MEDIA = [
+  { id: "plex", name: "Plex", port: 32400, path: "/identity", web: "/web", note: "Movies and TV from anywhere at app.plex.tv." },
+  { id: "jellyfin", name: "Jellyfin", port: 8096, path: "/System/Info/Public", web: "/web", note: "Free media server for movies, shows and music." },
+  { id: "audiobookshelf", name: "Audiobookshelf", port: 13378, path: "/status", web: "/", note: "Audiobooks and podcasts." },
+  { id: "sunshine", name: "Sunshine", port: 47990, path: "/", web: "/", tls: true, note: "Game streaming and remote desktop for Moonlight." },
+];
+
+function probe(svc) {
+  return new Promise((resolve) => {
+    const lib = svc.tls ? https : http;
+    const req = lib.get({ host: "127.0.0.1", port: svc.port, path: svc.path, timeout: 2500, rejectUnauthorized: false }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { if (body.length < 4000) body += c; });
+      res.on("end", () => resolve({ up: true, status: res.statusCode, body }));
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", () => resolve({ up: false }));
+  });
+}
+
+function lanIp() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list || []) if (n.family === "IPv4" && !n.internal && /^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\./.test(n.address)) return n.address;
+  }
+  return null;
+}
+
+async function pcStatus() {
+  const lan = lanIp();
+  const services = await Promise.all(MEDIA.map(async (svc) => {
+    const r = await probe(svc);
+    let setup = null;
+    try {
+      if (r.up && svc.id === "jellyfin") setup = JSON.parse(r.body).StartupWizardCompleted ? "ready" : "needs-setup";
+      if (r.up && svc.id === "audiobookshelf") setup = JSON.parse(r.body).isInit ? "ready" : "needs-setup";
+      if (r.up && svc.id === "plex") setup = /claimed="1"/.test(r.body) ? "ready" : "needs-setup";
+    } catch {}
+    return { id: svc.id, name: svc.name, note: svc.note, up: r.up, setup, port: svc.port,
+      lanUrl: lan ? `${svc.tls ? "https" : "http"}://${lan}:${svc.port}${svc.web}` : null };
+  }));
+  let disk = null;
+  try { const st = fs.statfsSync(DATA); disk = { free: st.bavail * st.bsize, total: st.blocks * st.bsize }; } catch {}
+  return {
+    host: os.hostname(), lan, uptime: Math.round(process.uptime()), started: Date.now() - Math.round(process.uptime() * 1000),
+    tunnel: tunnelUrl, backup: lastSync, dbBackup: lastBackup, turnCheck, disk, services,
   };
 }
 
@@ -1288,38 +1349,6 @@ const server = http.createServer(async (req, res) => {
         return proxyPage(target, base, res);
       }
       return proxyResource(target, base, res);
-    }
-
-    // ---- Remote computer access ----
-    if (url.pathname === "/api/computer/register" && req.method === "POST") {
-      const body = await readBody(req, 2048);
-      const { username, computer_id, hostname, platform } = JSON.parse(body);
-      if (!S.USERNAME.test(username) || !computer_id || !hostname) return reply(res, 400, { error: "Invalid request" });
-
-      // Store linked computer in local database
-      const acc = getAccount(username);
-      if (!acc) return reply(res, 404, { error: "Account not found" });
-
-      const computers = acc.computers || {};
-      computers[computer_id] = { hostname, platform, linked_at: Date.now(), active: true };
-      q("UPDATE accounts SET computers = ? WHERE username = ?").run(JSON.stringify(computers), username);
-
-      // Sync this to the backup relay
-      kvSet("computer:" + username + ":" + computer_id, { hostname, platform, linked_at: Date.now() });
-
-      return reply(res, 200, { ok: true, computer_id });
-    }
-
-    if (url.pathname === "/api/computer/active" && req.method === "POST") {
-      // Service pings to say it's running
-      const body = await readBody(req, 512);
-      const { username, computer_id } = JSON.parse(body);
-      const computers = JSON.parse(getAccount(username)?.computers || "{}");
-      if (computers[computer_id]) {
-        computers[computer_id].last_seen = Date.now();
-        q("UPDATE accounts SET computers = ? WHERE username = ?").run(JSON.stringify(computers), username);
-      }
-      return reply(res, 200, { ok: true });
     }
 
     if (url.pathname === "/" || url.pathname === "/api") return reply(res, 200, { ok: true, service: "FreeMessenger relay", primary: true });

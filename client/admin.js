@@ -30,9 +30,21 @@ function el(tag, props, ...kids) {
   return e;
 }
 
-async function call(action, extra) {
+const OFFLINE = "Can't reach your home PC right now, so the admin panel can't open. It will open by itself as soon as your PC's relay is back online.";
+
+// The app reconnects within ~20 seconds when the home PC relay comes back, so wait for that instead of failing.
+async function ready(ms = 25000) {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 500))) {
+    const conn = ctx.conn();
+    if (conn && conn.ready && Relays.onPrimary()) return conn;
+  }
   const conn = ctx.conn();
-  if (!conn || !conn.ready) throw new Error("Not connected.");
+  if (conn && conn.ready) return conn;
+  throw Object.assign(new Error(OFFLINE), { offline: true });
+}
+
+async function call(action, extra) {
+  const conn = await ready();
   const r = await conn.op("admin", Object.assign({ action }, extra));
   if (r.error) throw Object.assign(new Error(r.error), { needApproval: !!r.needApproval, banned: !!r.banned });
   return r;
@@ -171,7 +183,7 @@ async function show(name, reload) {
   const body = $("admin-body");
   if (reload || !data) {
     clear(body);
-    body.appendChild(el("p", { class: "hint" }, "Loading…"));
+    body.appendChild(el("p", { class: "hint" }, "Connecting to your PC…"));
     try {
       data = await call("overview");
       if (!trustedHere) { const w = await call("whoami"); isSuperHere = !!w.super; trustedHere = true; }
@@ -180,7 +192,9 @@ async function show(name, reload) {
       if (e.needApproval && (await tryDevice())) return show(name, true);
       if (e.needApproval) return askApproval(body, () => show(name, true));
       clear(body);
-      body.appendChild(el("p", { class: "error" }, e.message));
+      const offline = e.offline || /home server/i.test(e.message);
+      body.appendChild(el("p", { class: "error" }, offline ? OFFLINE : e.message));
+      if (offline) setTimeout(() => { if (!$("admin").hidden && tab === name) show(name, true); }, 5000);
       return;
     }
   }
@@ -192,6 +206,7 @@ async function show(name, reload) {
   else if (name === "reports") renderReports(body);
   else if (name === "alerts") renderAlerts(body);
   else if (name === "settings") renderSettings(body);
+  else if (name === "pc") renderPc(body);
   else renderActivity(body);
 }
 
@@ -518,6 +533,50 @@ function renderActivity(body) {
   }
   body.appendChild(el("h3", {}, "Recent events"));
   for (const e of data.events) body.appendChild(el("div", { class: "admin-msg" }, el("small", {}, when(e.ts)), el("div", {}, e.text)));
+}
+
+// ---------- your PC: relay health and media servers (owner only) ----------
+
+const ago = (secs) => (secs < 120 ? `${secs} seconds` : secs < 7200 ? `${Math.round(secs / 60)} minutes` : secs < 172800 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`);
+
+async function renderPc(body) {
+  const box = el("div", {}, el("p", { class: "hint" }, "Checking your PC…"));
+  body.appendChild(box);
+  let r;
+  try { r = await call("pc"); } catch (e) { clear(box); return box.appendChild(el("p", { class: "error" }, e.message)); }
+  clear(box);
+  const ok = (good, text) => el("p", { class: "hint" }, (good ? "✅ " : "⚠️ ") + text);
+  box.append(
+    el("h3", {}, `🖥️ ${r.host}`),
+    ok(true, `Relay running for ${ago(r.uptime)} (since ${when(r.started)}).`),
+    ok(!!r.tunnel, r.tunnel ? `Reachable from the internet at ${r.tunnel}` : "Internet tunnel isn't up yet. It usually takes a few seconds after a restart."),
+    ok(r.backup && r.backup.ok, r.backup ? `Backup relay sync: ${r.backup.ok ? "OK" : "failed"} (${when(r.backup.ts)}).` : "Not synced with the backup relay yet."),
+    ok(r.turnCheck && r.turnCheck.ok, r.turnCheck ? (r.turnCheck.ok ? "Calls relay (TURN) is reachable from the internet." : `Calls relay (TURN) isn't reachable: ${r.turnCheck.error}`) : "Calls relay (TURN) not checked yet."),
+    ok(!!r.dbBackup, r.dbBackup ? `Last database backup: ${when(r.dbBackup.ts)}.` : "No database backup yet."),
+  );
+  if (r.disk) {
+    const pct = Math.max(0, Math.min(100, 100 - (r.disk.free / r.disk.total) * 100));
+    box.append(el("p", { class: "hint" }, `Data drive: ${size(r.disk.free)} free of ${size(r.disk.total)}${pct > 95 ? " — almost full!" : ""}`),
+      el("div", { class: "meter" }, el("span", { style: `width:${pct.toFixed(1)}%` })));
+  }
+  box.append(el("button", { class: "ghost small", onclick: async (ev) => {
+    if (!confirm("Restart the relay on your PC? Everyone switches to the backup relay for about 30 seconds.")) return;
+    ev.target.disabled = true;
+    try { await call("restart-relay"); ctx.toast("Restarting. The panel reconnects by itself in about 30 seconds."); setTimeout(() => show("pc", true), 30000); }
+    catch (e) { ctx.toast(e.message); ev.target.disabled = false; }
+  } }, "🔄 Restart relay"));
+
+  box.append(el("h3", {}, "Media and game streaming"),
+    el("p", { class: "hint" }, "These run on your PC. \"Open\" links work while you're on your home Wi-Fi."));
+  for (const svc of r.services) {
+    const state = !svc.up ? "⏸️ Not running (your PC starts it again within 5 minutes)" : svc.setup === "needs-setup" ? "🛠️ Running, but needs its first-time setup" : "✅ Running";
+    const links = [];
+    if (svc.up && svc.lanUrl) links.push(el("a", { class: "ghost small", href: svc.lanUrl, target: "_blank", rel: "noopener" }, svc.setup === "needs-setup" ? "Finish setup" : "Open"));
+    if (svc.id === "plex") links.push(el("a", { class: "ghost small", href: "https://app.plex.tv/desktop", target: "_blank", rel: "noopener" }, "Open from anywhere"));
+    if (svc.id === "sunshine") links.push(el("a", { class: "ghost small", href: "https://moonlight-stream.org", target: "_blank", rel: "noopener" }, "Get Moonlight"));
+    box.appendChild(el("div", { class: "admin-msg" }, el("strong", {}, svc.name), el("small", {}, ` · port ${svc.port}`),
+      el("div", {}, state), el("div", { class: "hint" }, svc.note), el("div", {}, links)));
+  }
 }
 
 const stat = (label, value) => el("div", { class: "stat" }, el("strong", {}, String(value)), el("small", {}, label));
