@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="FreeMessenger Server" Language="1033" Version="$(var.Version)" Manufacturer="A Hacker's Guide"
+           UpgradeCode="EAF4105B-BE5C-4AC3-8132-6C26F70CD989">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Description="FreeMessenger home relay for your PC" />
+    <MajorUpgrade DowngradeErrorMessage="A newer FreeMessenger Server is already installed." />
+    <Media Id="1" Cabinet="server.cab" EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="freemessenger.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/A-Hackers-Guide/FreeMessenger" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="FreeMessenger Server">
+          <Component Id="Setup" Guid="24BC8129-65B4-4D98-825B-5186174064CD">
+            <File Id="SetupPs1" Name="setup-server.ps1" Source="setup-server.ps1" KeyPath="yes" />
+            <File Id="SrvIco" Name="freemessenger.ico" Source="freemessenger.ico" />
+            <Shortcut Id="SetupShortcut" Directory="ProgramMenuFolder" Name="Set up FreeMessenger Server"
+                      Description="Turn this PC into your FreeMessenger home relay"
+                      Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                      Arguments="-NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]setup-server.ps1&quot;"
+                      Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
+          </Component>
+          <Directory Id="ServerDir" Name="server">
+            <Component Id="ServerFiles" Guid="16FB4ED9-8379-4089-95B8-CAAB7043FEF2">
+              <File Id="ServerJs" Name="server.js" Source="stage/server/server.js" KeyPath="yes" />
+              <File Id="ProxyJs" Name="proxy.js" Source="stage/server/proxy.js" />
+              <File Id="SetupMjs" Name="setup.mjs" Source="stage/server/setup.mjs" />
+              <File Id="PkgJson" Name="package.json" Source="stage/server/package.json" />
+              <File Id="PkgLock" Name="package-lock.json" Source="stage/server/package-lock.json" />
+              <File Id="InstallPs1" Name="install.ps1" Source="stage/server/install.ps1" />
+            </Component>
+          </Directory>
+          <Directory Id="RelayDir" Name="relay">
+            <Directory Id="RelaySrcDir" Name="src">
+              <Component Id="SharedFiles" Guid="442F4F13-3914-44E9-B122-3EDAAA51AF43">
+                <File Id="SharedJs" Name="shared.js" Source="stage/relay/src/shared.js" KeyPath="yes" />
+              </Component>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <Property Id="POWERSHELLEXE" Value="C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" />
+    <CustomAction Id="RunSetup" Property="POWERSHELLEXE" Impersonate="yes" Return="asyncNoWait"
+                  ExeCommand="-NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]setup-server.ps1&quot;" />
+    <InstallExecuteSequence>
+      <Custom Action="RunSetup" After="InstallFinalize">NOT Installed AND UILevel &gt; 3</Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="Setup" />
+      <ComponentRef Id="ServerFiles" />
+      <ComponentRef Id="SharedFiles" />
+    </Feature>
+  </Product>
+</Wix>

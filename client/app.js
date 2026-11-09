@@ -3903,6 +3903,64 @@ function mentionSuggest() {
 $("send-text").addEventListener("input", mentionSuggest);
 $("send-text").addEventListener("blur", () => setTimeout(() => ($("mention-list").hidden = true), 150));
 
+// ---------- quick replies: type / in a chat ----------
+
+const QUICK_DEFAULT = ["On my way!", "Can't talk right now. I'll call you later.", "Sounds good 👍", "Thank you!", "Running a few minutes late, sorry!"];
+const quickReplies = () => store.get("quickReplies", QUICK_DEFAULT);
+
+function quickMatches() {
+  const ta = $("send-text");
+  const m = ta.value.slice(0, ta.selectionStart || 0).match(/^\/([^\n]{0,40})$/);
+  if (!active || !m) return null;
+  const q = m[1].toLowerCase();
+  return quickReplies().filter((r) => r.toLowerCase().indexOf(q) !== -1).slice(0, 8);
+}
+
+function useQuick(text) {
+  const ta = $("send-text");
+  ta.value = text;
+  ta.selectionStart = ta.selectionEnd = text.length;
+  $("mention-list").hidden = true;
+  ta.focus();
+  composerChanged();
+}
+
+function quickSuggest() {
+  const list = quickMatches();
+  if (!list) return;
+  const box = $("mention-list");
+  clear(box);
+  if (!list.length) { box.hidden = true; return; }
+  for (const r of list) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "⚡ " + r;
+    b.onmousedown = (e) => { e.preventDefault(); useQuick(r); };
+    box.appendChild(b);
+  }
+  box.hidden = false;
+}
+$("send-text").addEventListener("input", quickSuggest);
+$("send-text").addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || $("mention-list").hidden) return;
+  const list = quickMatches();
+  if (!list || !list.length) return;
+  e.preventDefault();
+  useQuick(list[0]);
+});
+$("quick-btn").onclick = () => {
+  $("quick-text").value = quickReplies().join("\n");
+  openDialog($("quick-dialog"));
+};
+$("quick-cancel").onclick = () => closeDialog($("quick-dialog"));
+$("quick-form").onsubmit = (e) => {
+  e.preventDefault();
+  const list = $("quick-text").value.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 50);
+  store.set("quickReplies", list);
+  closeDialog($("quick-dialog"));
+  toast(list.length ? `Saved ${list.length} quick ${list.length === 1 ? "reply" : "replies"}. Type / in a chat to use them.` : "Quick replies cleared.");
+};
+
 // ---------- keyboard shortcuts ----------
 
 function visibleChatIds() {

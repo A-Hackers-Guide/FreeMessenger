@@ -6,16 +6,16 @@
 # code and keeps your data, keys and settings.
 #
 #   -Admin    your FreeMessenger username (several: "name1,name2")
-#   -Folder   where everything goes (default E:\FreeMessenger)
+#   -Folder   where everything goes (default E:\FreeMessenger if it exists, else your user folder)
 #   -CapGB    the most storage messages may use (default 100)
-#   -BackupFolder  where nightly database copies go, ideally another drive (default H:\FreeMessenger-backups)
+#   -BackupFolder  where nightly database copies go, ideally another drive (default H:\FreeMessenger-backups if H: exists)
 #   -NoTurn   skip the TURN server
 
 param(
   [Parameter(Mandatory = $true)] [string]$Admin,
-  [string]$Folder = "E:\FreeMessenger",
+  [string]$Folder = $(if (Test-Path "E:\FreeMessenger") { "E:\FreeMessenger" } else { Join-Path $env:USERPROFILE "FreeMessenger" }),
   [int]$CapGB = 100,
-  [string]$BackupFolder = "H:\FreeMessenger-backups",
+  [string]$BackupFolder = $(if (Test-Path "H:\") { "H:\FreeMessenger-backups" } else { Join-Path $env:USERPROFILE "FreeMessenger-backups" }),
   [switch]$NoTurn
 )
 $ErrorActionPreference = "Stop"

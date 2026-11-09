@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="FreeMessenger" Language="1033" Version="$(var.Version)" Manufacturer="A Hacker's Guide"
+           UpgradeCode="6506A268-CD51-4B95-94DE-49E55D358788">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Description="FreeMessenger: free texting, voice and video calls" />
+    <MajorUpgrade DowngradeErrorMessage="A newer FreeMessenger is already installed." />
+    <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="freemessenger.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/A-Hackers-Guide/FreeMessenger" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="FreeMessenger">
+          <Component Id="AppFiles" Guid="15C9C92E-FC26-4029-9E70-CBA49B0166A8">
+            <File Id="IcoFile" Name="freemessenger.ico" Source="freemessenger.ico" KeyPath="yes" />
+            <File Id="UrlFile" Name="FreeMessenger.url" Source="FreeMessenger.url" />
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FreeMessenger"
+                      Description="Free texting, voice and video calls"
+                      Target="[ProgramFilesFolder]Microsoft\Edge\Application\msedge.exe"
+                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/"
+                      Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
+            <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="FreeMessenger"
+                      Description="Free texting, voice and video calls"
+                      Target="[ProgramFilesFolder]Microsoft\Edge\Application\msedge.exe"
+                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/"
+                      Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="AppFiles" />
+    </Feature>
+  </Product>
+</Wix>

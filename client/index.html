@@ -252,6 +252,7 @@
       <select id="set-size"><option value="small">Small</option><option value="normal">Normal</option><option value="large">Large</option><option value="xlarge">Extra large</option></select>
     </label>
     <label class="setting"><span>Enter key sends the message</span><input type="checkbox" id="set-enter"></label>
+    <label class="setting"><span>Quick replies (type / in a chat to use them)</span><button type="button" id="quick-btn" class="ghost small">Edit</button></label>
     <label class="setting"><span>Let people see when I've read their messages</span><input type="checkbox" id="set-receipts"></label>
     <label class="setting"><span>Let people see when I'm typing</span><input type="checkbox" id="set-typing"></label>
     <label class="setting"><span>Notifications</span><button type="button" id="notify-btn" class="ghost small">Turn on</button></label>
@@ -379,6 +380,15 @@
       <p class="fine">The home server sends it at that time, even if your device is off.</p>
       <p id="schedule-error" class="error" role="alert"></p>
       <div class="row"><button type="button" id="schedule-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Schedule</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="quick-dialog">
+    <form id="quick-form" class="stack-form">
+      <h2>Quick replies</h2>
+      <label>One per line<textarea id="quick-text" rows="8" maxlength="8000"></textarea></label>
+      <p class="fine">In any chat, type <b>/</b> and pick one, or keep typing to filter. Tab picks the first one.</p>
+      <div class="row"><button type="button" id="quick-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Save</button></div>
     </form>
   </dialog>
 

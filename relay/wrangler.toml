@@ -16,6 +16,10 @@ new_sqlite_classes = ["User"]
 # Optional: Cloudflare TURN for calls through strict firewalls.
 # Set with:  npx wrangler secret put TURN_KEY_ID  /  TURN_KEY_API_TOKEN
 
+# Checks every 5 minutes whether the home PC relay is still checking in.
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 # The home PC relay's public sync key (from server/setup.mjs). Only the home
 # PC, which holds the private half, can sync with this relay. Safe to publish.

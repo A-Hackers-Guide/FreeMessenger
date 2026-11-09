@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>FreeMessenger Server</title>
+  <conclusion file="conclusion.html" mime-type="text/html"/>
+  <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+  <choices-outline><line choice="default"><line choice="server"/></line></choices-outline>
+  <choice id="default"/>
+  <choice id="server" visible="false"><pkg-ref id="io.github.a-hackers-guide.freemessenger-server"/></choice>
+  <pkg-ref id="io.github.a-hackers-guide.freemessenger-server" version="@VERSION@" onConclusion="none">server-component.pkg</pkg-ref>
+</installer-gui-script>

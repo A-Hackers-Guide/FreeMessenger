@@ -38,6 +38,11 @@ const post = (stub, path, body) => stub.fetch("https://do" + path, { method: "PO
 const ipOf = (request) => request.headers.get("CF-Connecting-IP") || "";
 
 export default {
+  // Every 5 minutes: tell the owner when the home PC relay goes offline, and when it's back.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(watchPrimary(env));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
@@ -160,6 +165,20 @@ async function stunOverTcp(host, port) {
   }
 }
 
+// ---------- home PC watch ----------
+
+const OFFLINE_ALERT_MS = 10 * 60e3;
+
+async function watchPrimary(env) {
+  const reg = registry(env);
+  const r = await (await post(reg, "/watch")).json();
+  if (!r.alert) return;
+  console.log(`home PC watch: ${r.alert} (last check-in ${new Date(r.since).toISOString()})`);
+  const cfg = await (await reg.fetch("https://do/config")).json();
+  const owner = (cfg.admins || [])[0];
+  if (owner) await post(userStub(env, owner), "/alert", { kind: r.alert, since: r.since });
+}
+
 // ---------- sync with the home PC ----------
 
 async function sync(request, env) {
@@ -272,6 +291,21 @@ export class User {
       if (body.turn && typeof body.turn === "object") await s.put("turn", body.turn); else if (body.turn === null) await s.delete("turn");
       return json({ ok: true });
     }
+    if (url.pathname === "/watch") {
+      const p = await s.get("primary");
+      if (!p) return json({});
+      const alerted = await s.get("offlineAlert");
+      const gone = Date.now() - p.ts;
+      if (gone > OFFLINE_ALERT_MS && !alerted) {
+        await s.put("offlineAlert", p.ts);
+        return json({ alert: "pc-offline", since: p.ts });
+      }
+      if (gone < 120e3 && alerted) {
+        await s.delete("offlineAlert");
+        return json({ alert: "pc-online", since: alerted });
+      }
+      return json({});
+    }
     if (url.pathname === "/mark") {
       const names = (body.names || []).filter((n) => USERNAME.test(n));
       if (names.length) await s.put(Object.fromEntries(names.map((n) => ["d:" + n, Date.now()])));
@@ -297,7 +331,7 @@ export class User {
   async fetch(request) {
     const url = new URL(request.url);
     // Only the registry instance is ever sent these.
-    if (["/primary", "/config", "/set", "/mark", "/take-dirty", "/old-name"].includes(url.pathname)) return this.registryFetch(url, request);
+    if (["/primary", "/config", "/set", "/mark", "/take-dirty", "/old-name", "/watch"].includes(url.pathname)) return this.registryFetch(url, request);
 
     if (url.pathname === "/register") {
       let data;
@@ -311,6 +345,13 @@ export class User {
       await this.ctx.storage.put("profile", { username, sigPub, ecdhPub, created: Date.now(), ip, seen: Date.now(), origin: "cf" });
       this.markDirty();
       return json({ ok: true, username });
+    }
+
+    if (url.pathname === "/alert") {
+      let b = {};
+      try { b = JSON.parse(await request.text()); } catch {}
+      if (b.kind === "pc-offline" || b.kind === "pc-online") this.notify({ kind: b.kind, since: Number(b.since) || 0 }, true);
+      return json({ ok: true });
     }
 
     if (url.pathname === "/profile") {

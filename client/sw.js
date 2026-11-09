@@ -139,6 +139,15 @@ self.addEventListener("push", (e) => {
   try { data = e.data ? e.data.json() : {}; } catch {}
   const from = typeof data.from === "string" ? "@" + data.from : "Someone";
   const call = data.kind === "call";
+  if (data.kind === "pc-offline" || data.kind === "pc-online") {
+    const at = data.since ? new Date(data.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "a while";
+    const off = data.kind === "pc-offline";
+    return e.waitUntil(self.registration.showNotification(off ? "Your PC is offline" : "Your PC is back online", {
+      body: off ? `FreeMessenger's home relay stopped checking in at ${at}. Messages still work through the backup; the admin panel, big files and history need your PC.`
+        : `The home relay is running again (it was offline since ${at}).`,
+      tag: "pc-status", icon: "icon-192.png", badge: "icon-192.png", renotify: true, data: { chat: null },
+    }));
+  }
   const title = call ? `Missed call from ${from}` : `New message from ${from}`;
   e.waitUntil(
     Promise.all([self.clients.matchAll({ type: "window", includeUncontrolled: true }), dndNow()]).then(([list, quiet]) => {
