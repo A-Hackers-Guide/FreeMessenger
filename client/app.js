@@ -995,6 +995,14 @@ function sweepExpired() {
 }
 setInterval(sweepExpired, 30000);
 
+// Timed mutes turn notifications back on by themselves.
+function sweepMutes() {
+  let changed = false;
+  for (const c of Object.values(chats || {})) if (c.muteUntil && c.muteUntil <= Date.now()) { c.muted = false; delete c.muteUntil; changed = true; }
+  if (changed) { saveChats(); renderChats(); updateTitle(); }
+}
+setInterval(sweepMutes, 30000);
+
 // ---------- rendering ----------
 
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -1971,13 +1979,16 @@ function mainChatMenu() {
     items.push([`Disappearing messages: ${current}`, () => TTL_CHOICES.map(([ttl, label]) =>
       [(ttl === (c.ttl || 0) ? "✓ " : "") + label, () => setTtl(id, ttl, me.username)])]);
   }
-  items.push([c.muted ? "Unmute notifications" : "Mute notifications", () => {
-    c.muted = !c.muted;
+  const setMute = (on, ms) => {
+    c.muted = on;
+    if (on && ms) c.muteUntil = Date.now() + ms; else delete c.muteUntil;
     saveChats();
     renderChats();
     updateTitle();
-    toast(c.muted ? "Muted." : "Notifications on for this chat.");
-  }]);
+    toast(!on ? "Notifications on for this chat." : ms ? `Muted until ${new Date(c.muteUntil).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}.` : "Muted.");
+  };
+  if (c.muted) items.push([c.muteUntil ? `Unmute (muted until ${new Date(c.muteUntil).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })})` : "Unmute notifications", () => setMute(false)]);
+  else items.push(["Mute notifications", () => [["For 1 hour", () => setMute(true, 3600e3)], ["For 8 hours", () => setMute(true, 8 * 3600e3)], ["For 1 week", () => setMute(true, 7 * 86400e3)], ["Always", () => setMute(true, 0)]]]);
   if (group) {
     if (!c.left) items.push([`Members (${c.members.length})`, () => memberMenu(id)]);
     if (!c.left && isGroupAdmin(c, me.username)) {
