@@ -190,7 +190,7 @@ async function connect() {
       if (on) {
         flushOutbox();
         Push.refresh(conn);
-        if (flags.primary && c.relay !== Relays.BACKUP) {
+        if (flags.primary && !Relays.isBackup(c.relay)) {
           loadAnnouncements();
           syncDevice();
           setTimeout(fetchPendingBig, 3000);
@@ -2958,6 +2958,8 @@ function showCalls() {
 }
 
 function openSettings() {
+  const relaysField = $("set-relays");
+  if (relaysField) relaysField.value = (store.get("relays.extra", []) || []).join("\n");
   $("set-theme").value = settings.theme;
   $("set-size").value = settings.size;
   $("set-enter").checked = settings.enterSends;
@@ -3836,6 +3838,12 @@ $("set-lock-after").onchange = () => { settings.lockAfter = Number($("set-lock-a
 
 // ---------- privacy and Do Not Disturb ----------
 
+if ($("set-relays")) $("set-relays").onchange = () => {
+  const list = $("set-relays").value.split(/\s+/).map((s) => s.trim()).filter((u) => /^https?:\/\//i.test(u)).slice(0, 10);
+  store.set("relays.extra", list);
+  toast(list.length ? "Backup relays saved. They're used if the main one is blocked." : "Backup relays cleared.");
+  Relays.pick();
+};
 $("set-seen").onchange = async () => {
   settings.hideSeen = !$("set-seen").checked;
   store.set("settings", settings);

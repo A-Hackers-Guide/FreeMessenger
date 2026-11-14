@@ -722,3 +722,6 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .share-input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line, #ddd); border-radius: 6px; background: var(--bg); color: var(--text); }
 .share-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 4px; }
 .share-list li { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+
+/* Connection setting */
+.set-relays { width: 100%; box-sizing: border-box; margin: 4px 0 8px; padding: 8px; border: 1px solid var(--line, #ddd); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; resize: vertical; }

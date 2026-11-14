@@ -288,6 +288,9 @@
     <div class="setting"><span><input type="checkbox" id="set-dnd"> Silence notifications from</span><span><input type="time" id="set-dnd-from"> to <input type="time" id="set-dnd-to"></span></div>
     <p class="fine">@mentions still notify you in muted groups. Keyboard: Ctrl/⌘+K search, Ctrl/⌘+E emoji, Alt+↑/↓ switch chats. Long-press or right-click Send for silent sending and effects. Formatting: **bold**, _italic_, ~strike~, `code`, ||spoiler||.</p>
     <p class="fine">Messages are encrypted, but every saved message carries a copy the site admin can read, to stop illegal content. The admin can also see your account details and IP address, and can freeze, time out or ban accounts. Typing and call audio/video aren't saved.</p>
+    <h3 class="settings-head">Connection</h3>
+    <label class="setting"><span>Backup relays / proxy URLs (one per line). Used if the main relay is blocked.</span></label>
+    <textarea id="set-relays" class="set-relays" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://my-other-relay.example.com"></textarea>
     <button id="settings-close" class="primary">Done</button>
   </dialog>
 
