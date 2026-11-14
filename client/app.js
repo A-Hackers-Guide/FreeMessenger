@@ -1122,11 +1122,30 @@ function fillAvatar(el, id) {
 
 // Links in messages open in a new tab; everything else is plain text.
 // People with the web viewer also get a button to open them there.
-// Renders message text: *italic* **bold** ~~strike~~ `code` ||spoiler|| and links.
-// Any formatting error falls back to plain text, so a message never fails to show.
 function linkify(el, text) {
-  try { Powerups.formatInto(el, text, flags.proxy, Browser.open); }
-  catch { el.appendChild(document.createTextNode(String(text == null ? "" : text))); }
+  const re = /\b(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]])/gi;
+  let last = 0;
+  let match;
+  while ((match = re.exec(text))) {
+    if (match.index > last) el.appendChild(document.createTextNode(text.slice(last, match.index)));
+    const a = document.createElement("a");
+    a.href = match[1];
+    a.textContent = match[1];
+    a.target = "_blank";
+    a.rel = "noopener noreferrer nofollow";
+    el.appendChild(a);
+    if (flags.proxy) {
+      const v = document.createElement("button");
+      v.className = "view-link";
+      v.textContent = "View";
+      v.title = "Open in the web viewer";
+      const url = match[1];
+      v.onclick = (e) => { e.stopPropagation(); Browser.open(url); };
+      el.appendChild(v);
+    }
+    last = match.index + match[1].length;
+  }
+  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
 }
 
 // Built at run time: browsers older than 2020 can't read these patterns, and

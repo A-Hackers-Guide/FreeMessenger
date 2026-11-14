@@ -5,47 +5,6 @@
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- message text formatting ----------
-//
-// *italic*  **bold**  ~~strike~~  `code`  ||spoiler||  plus clickable links.
-// Inside code the text is literal; the rest is kept deliberately simple so it
-// can't mangle a message.
-
-const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|~~([^~\n]+)~~|\|\|([^|\n]+)\|\||(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]])/g;
-
-export function formatInto(el, text, proxy, onView) {
-  text = String(text == null ? "" : text);
-  let last = 0, m;
-  INLINE.lastIndex = 0;
-  while ((m = INLINE.exec(text))) {
-    if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
-    if (m[1] != null) { const c = document.createElement("code"); c.textContent = m[1]; el.appendChild(c); }
-    else if (m[2] != null) { const b = document.createElement("strong"); b.textContent = m[2]; el.appendChild(b); }
-    else if (m[3] != null) { const i = document.createElement("em"); i.textContent = m[3]; el.appendChild(i); }
-    else if (m[4] != null) { const s = document.createElement("s"); s.textContent = m[4]; el.appendChild(s); }
-    else if (m[5] != null) {
-      const sp = document.createElement("span");
-      sp.className = "spoiler"; sp.textContent = m[5];
-      sp.title = "Tap to reveal";
-      sp.onclick = (e) => { e.stopPropagation(); sp.classList.add("revealed"); };
-      el.appendChild(sp);
-    } else if (m[6] != null) {
-      const a = document.createElement("a");
-      a.href = m[6]; a.textContent = m[6]; a.target = "_blank"; a.rel = "noopener noreferrer nofollow";
-      el.appendChild(a);
-      if (proxy && onView) {
-        const v = document.createElement("button");
-        v.className = "view-link"; v.textContent = "View"; v.title = "Open in the web viewer";
-        const url = m[6];
-        v.onclick = (e) => { e.stopPropagation(); onView(url); };
-        el.appendChild(v);
-      }
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
-}
-
 // ---------- read aloud ----------
 
 export function canSpeak() { return !!window.speechSynthesis && !!window.SpeechSynthesisUtterance; }
