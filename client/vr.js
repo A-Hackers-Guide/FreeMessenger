@@ -276,11 +276,12 @@ function quatFromAngles(yaw, pitch) {
 function buildScene(gl) {
   const vs = "attribute vec3 p;uniform mat4 mvp;void main(){gl_Position=mvp*vec4(p,1.0);}";
   const fs = "precision mediump float;uniform vec4 c;void main(){gl_FragColor=c;}";
-  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.warn("Loft shader:", gl.getShaderInfoLog(s)); return s; };
   const prog = gl.createProgram();
   gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
   gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
   gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.warn("Loft program link failed:", gl.getProgramInfoLog(prog)); return null; }
   const buf = (arr) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW); return b; };
   // floor grid lines, 10m square at 1m spacing
   const grid = [];
@@ -311,6 +312,7 @@ function drawObj(gl, g, geo, mvp, color) {
 }
 
 function drawScene(gl, g, viewProj) {
+  if (!g || !g.prog) return;
   gl.useProgram(g.prog);
   drawObj(gl, g, g.grid, viewProj, [0.5, 0.6, 0.85, 1]);
   const rp = loft && loft.remote && loft.remote.pos;
@@ -422,12 +424,12 @@ function enterPreview() {
   const stage = $("vr-stage");
   if (!canvas || !stage) return;
   const gl = canvas.getContext("webgl", { antialias: true }) || canvas.getContext("experimental-webgl");
-  if (!gl) { // no WebGL at all: fall back to the CSS backdrop
+  const g = gl && buildScene(gl);
+  if (!gl || !g) { // no usable WebGL: fall back to the CSS backdrop
     const sky = $("vr-sky");
     if (sky) { const t = loft.tint.map((c) => Math.round(c * 255)); sky.style.background = `radial-gradient(circle at 50% 40%, rgb(${t[0]},${t[1]},${t[2]}), #0a0a12 80%)`; sky.hidden = false; }
     return;
   }
-  const g = buildScene(gl);
   gl.enable(gl.DEPTH_TEST);
   loft.mode = "preview"; loft.gl = gl; loft.prog = g;
   const resize = () => { canvas.width = stage.clientWidth || innerWidth; canvas.height = stage.clientHeight || innerHeight; };
