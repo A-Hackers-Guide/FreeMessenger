@@ -232,81 +232,231 @@ function appLinks(room) {
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// ---------- the Loft itself (WebXR, with a safe fallback) ----------
+// ---------- the Loft: a shared WebXR room with head-pose sync ----------
+//
+// Both people enter the same room (named after one of them). Each sends its
+// head position and facing to the other a few times a second over the normal
+// messenger channel (ephemeral, so nothing is stored), and draws the other as
+// an avatar that moves and turns in real time. Off a headset you get the same
+// room as a look-around preview, so you can still meet.
 
-let session = null;
-let gl = null;
-let rafId = 0;
+const EYE = [0, 1.6, 0]; // standing eye height, for the preview camera
 
-async function enterLoft(info, room) {
-  const dlg = $("vr-dialog");
-  if (dlg && dlg.open) closeDialog(dlg);
-  if (info.immersive) {
-    try { return await enterImmersive(info, room); }
-    catch (e) { ctx.toast("Couldn't start VR: " + (e && e.message ? e.message : "not available")); }
-  }
-  enterPreview(info, room);
+let loft = null; // { peer, room, mode, session, gl, prog, geo, refSpace, raf,
+                 //   localPose, remote, sendTimer, tint, yaw, pitch, handlers }
+
+// ----- tiny column-major 4x4 matrix math (matches WebGL / WebXR) -----
+function mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; }
+  return o;
+}
+const translate = (x, y, z) => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
+const scaleM = (s) => new Float32Array([s, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1]);
+function fromQuat(q) {
+  const x = q[0], y = q[1], z = q[2], w = q[3];
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2, wx = w * x2, wy = w * y2, wz = w * z2;
+  return new Float32Array([1 - (yy + zz), xy + wz, xz - wy, 0, xy - wz, 1 - (xx + zz), yz + wx, 0, xz + wy, yz - wx, 1 - (xx + yy), 0, 0, 0, 0, 1]);
+}
+function rotX(a) { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]); }
+function rotY(a) { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]); }
+function perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0]);
+}
+const model = (pos, quat, s) => mul(mul(translate(pos[0], pos[1], pos[2]), fromQuat(quat || [0, 0, 0, 1])), scaleM(s || 1));
+// A facing quaternion from look angles (yaw about Y, then pitch about X).
+function quatFromAngles(yaw, pitch) {
+  const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+  return [cy * sp, sy * cp, -sy * sp, cy * cp];
 }
 
-async function enterImmersive(info, room) {
+// ----- WebGL scene (floor grid + avatar cubes) -----
+function buildScene(gl) {
+  const vs = "attribute vec3 p;uniform mat4 mvp;void main(){gl_Position=mvp*vec4(p,1.0);}";
+  const fs = "precision mediump float;uniform vec4 c;void main(){gl_FragColor=c;}";
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  const buf = (arr) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW); return b; };
+  // floor grid lines, 10m square at 1m spacing
+  const grid = [];
+  for (let i = -5; i <= 5; i++) { grid.push(i, 0, -5, i, 0, 5, -5, 0, i, 5, 0, i); }
+  // unit cube (36 verts), centered
+  const h = 0.5, cube = [];
+  const faces = [[[-h, -h, h], [h, -h, h], [h, h, h], [-h, -h, h], [h, h, h], [-h, h, h]]];
+  // build all six faces by rotating the +z face
+  const rots = [(v) => v, (v) => [-v[0], v[1], -v[2]], (v) => [v[2], v[1], -v[0]], (v) => [-v[2], v[1], v[0]], (v) => [v[0], v[2], -v[1]], (v) => [v[0], -v[2], v[1]]];
+  for (const rf of rots) for (const v of faces[0]) { const r = rf(v); cube.push(r[0], r[1], r[2]); }
+  return {
+    prog,
+    a_p: gl.getAttribLocation(prog, "p"),
+    u_mvp: gl.getUniformLocation(prog, "mvp"),
+    u_c: gl.getUniformLocation(prog, "c"),
+    grid: { buf: buf(grid), n: grid.length / 3, mode: gl.LINES },
+    cube: { buf: buf(cube), n: cube.length / 3, mode: gl.TRIANGLES },
+  };
+}
+
+function drawObj(gl, g, geo, mvp, color) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, geo.buf);
+  gl.enableVertexAttribArray(g.a_p);
+  gl.vertexAttribPointer(g.a_p, 3, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(g.u_mvp, false, mvp);
+  gl.uniform4fv(g.u_c, color);
+  gl.drawArrays(geo.mode, 0, geo.n);
+}
+
+function drawScene(gl, g, viewProj) {
+  gl.useProgram(g.prog);
+  drawObj(gl, g, g.grid, viewProj, [0.5, 0.6, 0.85, 1]);
+  const rp = loft && loft.remote && loft.remote.pos;
+  if (rp) {
+    const q = loft.remote.quat || [0, 0, 0, 1];
+    drawObj(gl, g, g.cube, mul(viewProj, model(rp, q, 0.26)), [1, 0.62, 0.2, 1]); // head
+    // a brighter marker just in front of the face, so you can see which way they look
+    const nose = mul(model(rp, q, 1), translate(0, 0, -0.18));
+    drawObj(gl, g, g.cube, mul(viewProj, mul(nose, scaleM(0.09))), [1, 0.95, 0.6, 1]);
+  }
+}
+
+// ----- pose sync over the messenger -----
+export function onPeer(from, p) {
+  if (!loft || !loft.peer || from !== loft.peer || p.room !== loft.room) return;
+  if (p.op === "leave") { loft.remote = null; updatePresence(); return; }
+  if (p.op === "pose" || p.op === "join") {
+    if (Array.isArray(p.p)) loft.remote = { pos: p.p, quat: p.q || [0, 0, 0, 1], seen: Date.now() };
+    if (p.op === "join" && ctx.send && loft.localPose) ctx.send(from, { op: "pose", room: loft.room, p: loft.localPose.pos, q: loft.localPose.quat });
+    updatePresence();
+  }
+}
+
+function startSync(peer, room) {
+  if (!peer || !ctx.send) return;
+  loft.peer = peer; loft.room = room;
+  ctx.send(peer, { op: "join", room });
+  loft.sendTimer = setInterval(() => {
+    // drop a peer we haven't heard from in 8s
+    if (loft.remote && Date.now() - loft.remote.seen > 8000) { loft.remote = null; updatePresence(); }
+    if (loft.localPose) ctx.send(peer, { op: "pose", room, p: loft.localPose.pos, q: loft.localPose.quat });
+  }, 120);
+}
+
+function stopSync() {
+  if (!loft) return;
+  if (loft.sendTimer) clearInterval(loft.sendTimer);
+  if (loft.peer && ctx.send) try { ctx.send(loft.peer, { op: "leave", room: loft.room }); } catch {}
+}
+
+function updatePresence() {
+  const label = $("vr-stage-label");
+  if (!label || !loft) return;
+  const who = loft.peer ? "@" + loft.peer : "";
+  const here = loft.remote ? `${who} is here` : (loft.peer ? `waiting for ${who}…` : "solo");
+  label.textContent = `In the Loft — ${here}. Take off the headset or press Leave to go.`;
+}
+
+// ----- entering -----
+async function enterLoft(info, roomPeer) {
+  const dlg = $("vr-dialog");
+  if (dlg && dlg.open) closeDialog(dlg);
+  const me = ctx.me && ctx.me();
+  const peer = roomPeer && roomPeer !== me && /^[a-z0-9_]{3,20}$/.test(roomPeer) ? roomPeer : null;
+  const room = [me || "me", peer || "solo"].sort().join("~");
+  loft = { peer, room, tint: roomTint(info.kind), remote: null, localPose: null, yaw: 0, pitch: 0, handlers: [] };
+  showStage(true, "Entering the Loft…");
+  if (info.immersive) {
+    try { await enterImmersive(); startSync(peer, room); updatePresence(); return; }
+    catch (e) { ctx.toast("Couldn't start VR: " + (e && e.message ? e.message : "not available")); }
+  }
+  enterPreview();
+  startSync(peer, room);
+  updatePresence();
+}
+
+async function enterImmersive() {
   const canvas = $("vr-canvas");
   if (!canvas) throw new Error("no canvas");
-  gl = canvas.getContext("webgl", { xrCompatible: true, antialias: true, alpha: false })
+  const gl = canvas.getContext("webgl", { xrCompatible: true, antialias: true })
     || canvas.getContext("experimental-webgl", { xrCompatible: true });
   if (!gl) throw new Error("no WebGL");
   if (gl.makeXRCompatible) { try { await gl.makeXRCompatible(); } catch {} }
-
-  session = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
-  const layer = new XRWebGLLayer(session, gl);
-  session.updateRenderState({ baseLayer: layer });
+  const session = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
+  session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
   let refSpace;
   try { refSpace = await session.requestReferenceSpace("local-floor"); }
   catch { refSpace = await session.requestReferenceSpace("local"); }
-
-  const tint = roomTint(info.kind);
-  session.addEventListener("end", () => { session = null; showStage(false); });
-  showStage(true, `In the Loft${room ? " · @" + room : ""} — take off the headset or press the menu button to leave.`);
+  const g = buildScene(gl);
+  gl.enable(gl.DEPTH_TEST);
+  loft.mode = "xr"; loft.session = session; loft.gl = gl; loft.prog = g; loft.refSpace = refSpace;
+  session.addEventListener("end", () => exitLoft());
 
   const onFrame = (t, frame) => {
-    if (!session) return;
-    rafId = session.requestAnimationFrame(onFrame);
+    if (!loft || loft.session !== session) return;
+    loft.raf = session.requestAnimationFrame(onFrame);
+    const pose = frame.getViewerPose(refSpace);
     const glLayer = session.renderState.baseLayer;
     gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
-    // A calm breathing gradient room. Both eyes render the same clear, so you
-    // are standing inside a colored space you can look around.
-    const pulse = 0.5 + 0.5 * Math.sin(t / 2600);
-    gl.clearColor(tint[0] * (0.7 + 0.3 * pulse), tint[1] * (0.7 + 0.3 * pulse), tint[2] * (0.8 + 0.2 * pulse), 1);
+    const tint = loft.tint;
+    gl.clearColor(tint[0], tint[1], tint[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    frame.getViewerPose(refSpace); // keeps the compositor fed
+    if (!pose) return;
+    const p = pose.transform.position, o = pose.transform.orientation;
+    loft.localPose = { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w] };
+    for (const view of pose.views) {
+      const vp = glLayer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      drawScene(gl, g, mul(view.projectionMatrix, view.transform.inverse.matrix));
+    }
   };
-  rafId = session.requestAnimationFrame(onFrame);
+  loft.raf = session.requestAnimationFrame(onFrame);
 }
 
-// For phones and desktops: a full-screen look-around preview so the Loft isn't
-// a dead end off a headset. Tilt the phone (or move the mouse) to look around.
-function enterPreview(info, room) {
+// Off a headset: the same room, with a camera you steer by moving the mouse or
+// tilting the phone. Your facing is sent to the headset peer so they see you turn.
+function enterPreview() {
+  const canvas = $("vr-canvas");
   const stage = $("vr-stage");
-  if (!stage) return;
-  showStage(true, `Loft preview${room ? " · @" + room : ""} — open this link on a VR headset to step inside for real.`);
-  const sky = $("vr-sky");
-  if (sky) {
-    const tint = roomTint(info.kind).map((c) => Math.round(c * 255));
-    sky.style.background = `radial-gradient(circle at 50% 35%, rgb(${tint[0]},${tint[1]},${tint[2]}), #0a0a12 80%)`;
-    sky.hidden = false;
-    const move = (x, y) => { sky.style.backgroundPosition = `${50 + x * 20}% ${35 + y * 20}%`; };
-    stage._onmouse = (e) => move((e.clientX / innerWidth) - 0.5, (e.clientY / innerHeight) - 0.5);
-    stage._onorient = (e) => move((e.gamma || 0) / 90, (e.beta || 0) / 180);
-    addEventListener("mousemove", stage._onmouse);
-    addEventListener("deviceorientation", stage._onorient);
+  if (!canvas || !stage) return;
+  const gl = canvas.getContext("webgl", { antialias: true }) || canvas.getContext("experimental-webgl");
+  if (!gl) { // no WebGL at all: fall back to the CSS backdrop
+    const sky = $("vr-sky");
+    if (sky) { const t = loft.tint.map((c) => Math.round(c * 255)); sky.style.background = `radial-gradient(circle at 50% 40%, rgb(${t[0]},${t[1]},${t[2]}), #0a0a12 80%)`; sky.hidden = false; }
+    return;
   }
+  const g = buildScene(gl);
+  gl.enable(gl.DEPTH_TEST);
+  loft.mode = "preview"; loft.gl = gl; loft.prog = g;
+  const resize = () => { canvas.width = stage.clientWidth || innerWidth; canvas.height = stage.clientHeight || innerHeight; };
+  resize();
+  const onMove = (x, y) => { loft.yaw = -x * Math.PI; loft.pitch = Math.max(-1.2, Math.min(1.2, -y * 1.2)); };
+  const mouse = (e) => onMove((e.clientX / innerWidth) - 0.5, (e.clientY / innerHeight) - 0.5);
+  const orient = (e) => onMove((e.gamma || 0) / 90, (e.beta || 0) / 180 - 0.25);
+  addEventListener("mousemove", mouse); addEventListener("deviceorientation", orient); addEventListener("resize", resize);
+  loft.handlers = [["mousemove", mouse], ["deviceorientation", orient], ["resize", resize]];
+
+  const tick = () => {
+    if (!loft || loft.mode !== "preview") return;
+    loft.raf = requestAnimationFrame(tick);
+    const quat = quatFromAngles(loft.yaw, loft.pitch);
+    loft.localPose = { pos: EYE.slice(), quat };
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    const tint = loft.tint;
+    gl.clearColor(tint[0], tint[1], tint[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const proj = perspective(1.1, (canvas.width || 1) / (canvas.height || 1), 0.1, 100);
+    const viewM = mul(mul(rotX(-loft.pitch), rotY(-loft.yaw)), translate(-EYE[0], -EYE[1], -EYE[2]));
+    drawScene(gl, g, mul(proj, viewM));
+  };
+  loft.raf = requestAnimationFrame(tick);
 }
 
 function roomTint(kind) {
   return ({
-    quest: [0.11, 0.22, 0.45],
-    pico: [0.10, 0.30, 0.28],
-    vive: [0.28, 0.14, 0.34],
-    pcvr: [0.18, 0.20, 0.26],
+    quest: [0.11, 0.22, 0.45], pico: [0.10, 0.30, 0.28], vive: [0.28, 0.14, 0.34], pcvr: [0.18, 0.20, 0.26],
   })[kind] || [0.15, 0.18, 0.34];
 }
 
@@ -317,15 +467,15 @@ function showStage(on, text) {
   document.documentElement.classList.toggle("vr-loft-open", on);
   const label = $("vr-stage-label");
   if (label && text) label.textContent = text;
-  if (!on) {
-    const sky = $("vr-sky");
-    if (sky) sky.hidden = true;
-    if (stage._onmouse) { removeEventListener("mousemove", stage._onmouse); stage._onmouse = null; }
-    if (stage._onorient) { removeEventListener("deviceorientation", stage._onorient); stage._onorient = null; }
-  }
+  if (!on) { const sky = $("vr-sky"); if (sky) sky.hidden = true; }
 }
 
 function exitLoft() {
-  if (session) { try { session.end(); } catch {} session = null; }
+  if (!loft) { showStage(false); return; }
+  stopSync();
+  if (loft.mode === "preview" && loft.raf) cancelAnimationFrame(loft.raf);
+  for (const [ev, fn] of (loft.handlers || [])) removeEventListener(ev, fn);
+  if (loft.session) { try { loft.session.end(); } catch {} }
+  loft = null;
   showStage(false);
 }
