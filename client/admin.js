@@ -294,6 +294,14 @@ function accountCard(a) {
     const v = prompt(`Storage limit for @${u} in GB (0 = unlimited, empty = the default):`, a.quotaGB == null ? "" : String(a.quotaGB));
     if (v !== null) act("quota", u, { gb: v.trim() === "" ? null : Number(v) }, "Storage limit saved.");
   });
+  if (isSuperHere) btn("Login code", async () => {
+    if (!confirm(`Make a one-time login code for @${u}?\n\nThey enter it on the sign-in screen to get back into @${u} on a new device. It works once, lasts 24 hours, and their old device/backup stops working after.`)) return;
+    try {
+      const r = await call("recovery-make", { user: u });
+      if (r && r.error) return ctx.toast(r.error);
+      window.prompt(`One-time login code for @${u} (works once, 24 hours).\n\nGive it to them. They enter it on the sign-in screen under "I have a login code".`, r.code);
+    } catch (e) { ctx.toast(e.message || "Couldn't make a code."); }
+  });
   btn("Note", () => {
     const n = prompt(`Private note about @${u} (only admins see it):`, a.note || "");
     if (n !== null) act("note", u, { note: n }, "Note saved.");

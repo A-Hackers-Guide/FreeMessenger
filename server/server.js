@@ -633,6 +633,13 @@ function notify(name, data, urgent) {
 
 const proxyTickets = new Map(); // ticket -> { username, until }
 
+// One-time login (recovery) codes the owner can hand out, so someone who lost
+// their device/backup can get back into their account. Redeeming a code makes
+// the account use the new device's keys (see /api/recover). No ambiguous
+// characters, so it's easy to read out.
+const RCODE = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const recoveryCode = () => Array.from(nodeCrypto.randomBytes(8), (b) => RCODE[b % RCODE.length]).join("");
+
 async function op(a, type, msg, sess) {
   if (type === "send") return send(a, msg);
   if (type === "push-sub") return pushSubscribe(a.username, msg.sub);
@@ -876,6 +883,19 @@ async function op(a, type, msg, sess) {
       for (const [sid, v] of adminSessions) if (v.user === u) endAdminSession(sid);
       event(`@${a.username} took admin power away from @${u}`);
       return { ok: true };
+    }
+    // A one-time code the owner gives someone to get back into their account.
+    if (msg.action === "recovery-make") {
+      if (!superUser) return { error: "Only the owner can make a login code." };
+      const u = String(msg.user || "").toLowerCase();
+      if (!getAccount(u)) return { error: "No such account." };
+      const codes = kvGet("recovery", {});
+      for (const c of Object.keys(codes)) if (codes[c].until < Date.now()) delete codes[c];
+      const code = recoveryCode();
+      codes[code] = { user: u, until: Date.now() + 24 * 3600e3 };
+      kvSet("recovery", codes);
+      event(`@${a.username} made a one-time login code for @${u}`);
+      return { ok: true, code, user: u, expires: codes[code].until };
     }
     try { return await admin(a.username, msg); } catch (e) { return { error: e.message }; }
   }
@@ -1315,6 +1335,32 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const ip = clientIp(req);
     if (req.method === "OPTIONS") { res.writeHead(204, S.CORS); return res.end(); }
+
+    // Redeem a one-time login code: re-key the account to this device's keys so
+    // someone who lost their device/backup can get back in. The code is the
+    // proof; it's made by the owner in the admin panel and works once.
+    if (url.pathname === "/api/recover" && req.method === "POST") {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return reply(res, 400, { error: "bad json" }); }
+      if (ipBanned(ip)) return reply(res, 403, { error: "Sign-ins from this network are blocked." });
+      if (!limiter.take("recover:" + ip, 0.2, 8)) return reply(res, 429, { error: "Too many tries. Wait a bit and try again." });
+      const name = String(body.username || "").toLowerCase();
+      const code = String(body.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!S.isPublicJwk(body.sigPub) || !S.isPublicJwk(body.ecdhPub)) return reply(res, 400, { error: "bad keys" });
+      const codes = kvGet("recovery", {});
+      const entry = codes[code];
+      if (!entry || entry.until < Date.now() || entry.user !== name) return reply(res, 403, { error: "That login code isn't valid (check the name, or ask for a new code)." });
+      const acct = getAccount(name);
+      if (!acct) { delete codes[code]; kvSet("recovery", codes); return reply(res, 404, { error: "No such account." }); }
+      q("UPDATE accounts SET sigPub = ?, ecdhPub = ? WHERE username = ?").run(JSON.stringify(body.sigPub), JSON.stringify(body.ecdhPub), name);
+      // If it's an admin account, move its pinned key too, so admin still works.
+      if ((config.adminPins || {})[name]) { config.adminPins[name] = { x: body.sigPub.x, y: body.sigPub.y }; saveConfig(); }
+      delete codes[code]; kvSet("recovery", codes); // one-time
+      for (const ws of live(name)) { try { ws.close(4001, "re-keyed"); } catch {} }
+      markCf(name); syncSoon();
+      event(`@${name} got back in with a one-time login code (${ip || "?"})`);
+      return reply(res, 200, { ok: true, username: name });
+    }
 
     if (url.pathname === "/api/register" && req.method === "POST") {
       let body;

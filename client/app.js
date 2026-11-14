@@ -349,8 +349,15 @@ async function handleIncoming(env) {
   try {
     p = await E2E.decrypt(me, await getKey(env.from), env.body);
   } catch {
-    if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
-    return; // not really from them, or corrupted — drop it
+    // Maybe they got back in on a new device (new keys). Refresh their key from
+    // the server once and retry before giving up.
+    try {
+      delete peers[env.from]; savePeers();
+      p = await E2E.decrypt(me, await getKey(env.from), env.body);
+    } catch {
+      if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
+      return; // not really from them, or corrupted — drop it
+    }
   }
   if (chats[env.from] && chats[env.from].blocked) {
     if (!env.ephemeral) conn.ack([{ id: env.id, ts: env.ts }]);
@@ -2795,23 +2802,30 @@ async function importHistory(all, quiet) {
   return added;
 }
 
+// Pulls your whole message history from the home server, oldest first. Used by
+// the manual "Download" button and by the automatic first-time device sync.
+async function fetchAllHistory(onProgress) {
+  const all = [];
+  let before;
+  for (;;) {
+    if (onProgress) onProgress(all.length);
+    const r = await conn.op("history", { before });
+    if (!r || r.error) { if (r && r.error) throw new Error(r.error); break; }
+    all.push(...(r.messages || []));
+    if (r.done || !r.messages || !r.messages.length) break;
+    before = r.messages[r.messages.length - 1].ts;
+  }
+  all.sort((a, b) => a.ts - b.ts);
+  return all;
+}
+
 async function downloadHistory() {
   if (!conn || !conn.ready) return toast("You're offline. Try again when you're connected.");
   if (!Relays.onPrimary()) return toast("History is kept on the home server, which isn't on right now.");
   const btn = $("history-btn");
   btn.disabled = true;
-  const all = [];
   try {
-    let before;
-    for (;;) {
-      btn.textContent = `Downloading… ${all.length}`;
-      const r = await conn.op("history", { before });
-      if (r.error) throw new Error(r.error);
-      all.push(...r.messages);
-      if (r.done || !r.messages.length) break;
-      before = r.messages[r.messages.length - 1].ts;
-    }
-    all.sort((a, b) => a.ts - b.ts);
+    const all = await fetchAllHistory((n) => { btn.textContent = `Downloading… ${n}`; });
     const added = await importHistory(all, false);
     toast(added ? `Added ${added} messages from the server.` : "Everything was already here.");
   } catch (e) {
@@ -2830,7 +2844,14 @@ async function syncDevice() {
   syncingDevice = true;
   try {
     let after = store.get("syncedTo", 0);
-    if (!after) { store.set("syncedTo", Date.now()); return; }
+    if (!after) {
+      // First time on this device (e.g. you just switched devices or restored):
+      // pull the whole history so every chat shows up right away, then switch
+      // to light incremental sync.
+      try { const all = await fetchAllHistory(); if (all.length) await importHistory(all, true); } catch {}
+      store.set("syncedTo", Date.now());
+      return;
+    }
     for (let i = 0; i < 20; i++) {
       const r = await conn.op("history", { after });
       if (!r || r.error || !r.messages) break;
@@ -3132,6 +3153,37 @@ $("signup-form").onsubmit = async (e) => {
 
 $("import-btn").onclick = () => $("import-file").click();
 $("import-file").onchange = (e) => e.target.files[0] && importBackup(e.target.files[0]);
+
+// Getting back in with a one-time code the admin made (lost device / no backup).
+$("recover-btn").onclick = () => {
+  const f = $("recover-form");
+  f.hidden = !f.hidden;
+  if (!f.hidden) $("recover-name").focus();
+};
+$("recover-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const name = $("recover-name").value.trim().toLowerCase().replace(/^@/, "");
+  const code = $("recover-code").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  $("recover-error").textContent = "";
+  if (!USERNAME.test(name)) return ($("recover-error").textContent = "Enter your username.");
+  if (code.length < 6) return ($("recover-error").textContent = "Enter the login code the admin gave you.");
+  const btn = $("recover-form").querySelector("button[type=submit]");
+  btn.disabled = true;
+  try {
+    const identity = await E2E.createIdentity(name);
+    await Relays.pick();
+    await api("/api/recover", { username: name, code, sigPub: identity.sigPub, ecdhPub: identity.ecdhPub });
+    me = identity;
+    store.set("identity", me);
+    store.set("privacyNotice4", true);
+    store.remove("syncedTo"); // pull the whole history fresh on this device
+    start();
+  } catch (err) {
+    $("recover-error").textContent = err.message || "That login code didn't work. Check the name and code, or ask for a new one.";
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 $("add-form").onsubmit = (e) => {
   e.preventDefault();
