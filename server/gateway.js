@@ -158,14 +158,40 @@ function cleanHeaders(headers) {
   return out;
 }
 
+// Remove CSP directives that would stop the page being shown inside the
+// FreeMessenger panel (we keep the rest of the policy).
+function openEmbedding(h) {
+  for (const k of Object.keys(h)) {
+    const kl = k.toLowerCase();
+    if (kl === "x-frame-options") delete h[k];
+    else if (kl === "content-security-policy" || kl === "content-security-policy-report-only") {
+      h[k] = String(h[k]).split(",").map((pol) => pol.split(";").filter((d) => !/^\s*frame-ancestors/i.test(d)).join(";")).join(",");
+    }
+  }
+}
+
+// So the service's own page works under the /svc/<id>/ path when framed: point
+// root-absolute links at the prefix, add a <base>, and patch fetch/XHR/WebSocket
+// to do the same for requests the page makes while running.
+function rewriteHtml(html, base) {
+  html = html
+    .replace(/(\s(?:src|href|action|poster|data-src|data-href)\s*=\s*")\/(?!\/)/gi, `$1${base}/`)
+    .replace(/(\s(?:src|href|action|poster|data-src|data-href)\s*=\s*')\/(?!\/)/gi, `$1${base}/`);
+  const shim = `<base href="${base}/"><script>(function(){var B=${JSON.stringify(base)};function fx(u){try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")return B+u;}catch(e){}return u;}var f=window.fetch;if(f)window.fetch=function(u,o){return f(u&&u.url?u:fx(u),o);};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){return xo.apply(this,[m,fx(u)].concat([].slice.call(arguments,2)));};var WS=window.WebSocket;if(WS){var N=function(u,p){if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")u=(location.protocol==="https:"?"wss://":"ws://")+location.host+B+u;return p?new WS(u,p):new WS(u);};N.prototype=WS.prototype;window.WebSocket=N;}}());</script>`;
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + shim) : shim + html;
+}
+
+const rewriteCss = (css, base) => css.replace(/url\(\s*(['"]?)\/(?!\/)/gi, (m, q) => `url(${q}${base}/`);
+
 // Proxies one HTTP request to the service and streams the answer back.
-// `base` is the public path prefix (/svc/<token>/<id>) so redirects can be
-// rewritten to stay inside the gateway.
+// `base` is the public path prefix (/svc/<token>/<id>). HTML and CSS are
+// rewritten so the service works inside the panel; everything else (scripts,
+// images, video, downloads) streams straight through untouched.
 export function proxyHttp(req, res, svc, rest, base) {
   const lib = (svc.tls || svc.https) ? https : http;
   const headers = cleanHeaders(req.headers);
   headers.host = "127.0.0.1:" + svc.port;
-  delete headers["accept-encoding"]; // let us rewrite redirects without fighting compression
+  delete headers["accept-encoding"]; // uncompressed, so we can rewrite the text
   const options = {
     host: "127.0.0.1", port: svc.port, method: req.method,
     path: rest || "/", headers,
@@ -174,14 +200,28 @@ export function proxyHttp(req, res, svc, rest, base) {
   };
   const up = lib.request(options, (upRes) => {
     const h = cleanHeaders(upRes.headers);
-    // Keep redirects inside the gateway prefix.
+    openEmbedding(h);
     if (h.location && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(h.location)) {
       h.location = base + h.location.replace(/^https?:\/\/[^/]+/i, "");
     } else if (h.location && h.location.startsWith("/")) {
       h.location = base + h.location;
     }
-    res.writeHead(upRes.statusCode || 502, h);
-    upRes.pipe(res);
+    const type = String(h["content-type"] || "").toLowerCase();
+    const isHtml = /text\/html|application\/xhtml/.test(type);
+    const isCss = /text\/css/.test(type);
+    if (!isHtml && !isCss) { res.writeHead(upRes.statusCode || 502, h); return upRes.pipe(res); }
+    // Buffer the (small) text document, rewrite it, then send.
+    const chunks = []; let size = 0; let tooBig = false;
+    upRes.on("data", (c) => { size += c.length; if (size > 16 * 1024 * 1024) tooBig = true; if (!tooBig) chunks.push(c); });
+    upRes.on("end", () => {
+      if (tooBig) { res.writeHead(upRes.statusCode || 502, h); return res.end(Buffer.concat(chunks)); }
+      let body = Buffer.concat(chunks).toString("utf8");
+      body = isCss ? rewriteCss(body, base) : rewriteHtml(body, base);
+      delete h["content-length"];
+      res.writeHead(upRes.statusCode || 502, h);
+      res.end(body);
+    });
+    upRes.on("error", () => { try { res.end(); } catch {} });
   });
   up.on("timeout", () => up.destroy(new Error("service timeout")));
   up.on("error", () => { if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" }); res.end("Service isn't reachable."); });
