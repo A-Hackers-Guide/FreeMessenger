@@ -32,7 +32,7 @@ chmod +x "$m/AppRun"
 s=build/Server.AppDir
 mkdir -p "$s/server" "$s/relay/src"
 cp "$root/client/icon-512.png" "$s/freemessenger-server.png"; cp "$s/freemessenger-server.png" "$s/.DirIcon"
-cp "$root/server/server.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install-linux.sh" "$s/server/"
+cp "$root/server/server.js" "$root/server/gateway.js" "$root/server/update.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install-linux.sh" "$s/server/"
 cp "$root/relay/src/shared.js" "$s/relay/src/"
 cat > "$s/freemessenger-server.desktop" <<D
 [Desktop Entry]

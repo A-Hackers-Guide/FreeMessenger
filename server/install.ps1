@@ -25,7 +25,7 @@ $data = Join-Path $Folder "data"
 
 Write-Host "Copying the relay to $app"
 New-Item -ItemType Directory -Force -Path "$app\server", "$app\relay\src", $data | Out-Null
-Copy-Item "$here\server.js", "$here\proxy.js", "$here\setup.mjs", "$here\package.json", "$here\package-lock.json" "$app\server" -Force
+Copy-Item "$here\server.js", "$here\gateway.js", "$here\update.js", "$here\proxy.js", "$here\setup.mjs", "$here\package.json", "$here\package-lock.json" "$app\server" -Force
 Copy-Item "$here\..\relay\src\shared.js" "$app\relay\src" -Force
 Set-Content -Path "$app\relay\package.json" -Value '{ "type": "module" }' -Encoding ascii
 Push-Location "$app\server"

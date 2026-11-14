@@ -12,7 +12,7 @@ dist="$here/dist"; rm -rf "$dist"; mkdir -p "$dist"
 # Windows (.msi)
 cd "$here/windows"
 rm -rf stage && mkdir -p stage/server stage/relay/src
-cp "$root/server/server.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install.ps1" stage/server/
+cp "$root/server/server.js" "$root/server/gateway.js" "$root/server/update.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install.ps1" stage/server/
 cp "$root/relay/src/shared.js" stage/relay/src/
 printf '[InternetShortcut]\r\nURL=https://a-hackers-guide.github.io/FreeMessenger/\r\nIconIndex=0\r\n' > FreeMessenger.url
 wixl -D Version="$ver" -o "$dist/FreeMessenger-Messenger-$ver.msi" messenger.wxs

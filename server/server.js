@@ -23,6 +23,7 @@ import dgram from "node:dgram";
 import * as S from "../relay/src/shared.js";
 import { proxyPage, proxyResource, proxyAllowed, linkPreview } from "./proxy.js";
 import * as GW from "./gateway.js";
+import * as Updater from "./update.js";
 
 const DATA = path.resolve(process.argv[2] || "data");
 const CONFIG_FILE = path.join(DATA, "config.json");
@@ -1736,4 +1737,15 @@ server.listen(PORT, "127.0.0.1", async () => {
   await refreshPublicIp();
   startTunnel();
   syncNow();
+  // Keep the relay current with the project's GitHub. Off with "autoUpdate": false.
+  if (config.autoUpdate !== false) {
+    const appDir = path.resolve(DATA, "..", "app");
+    const runUpdate = async () => {
+      const r = await Updater.checkAndUpdate({ appDir, dataDir: DATA, repo: config.updateRepo, branch: config.updateBranch, log });
+      if (r.updated) { log(`Updated to ${String(r.sha).slice(0, 8)} — restarting to apply`); setTimeout(() => process.exit(0), 500); }
+      else if (r.reason && !/up to date|already current/.test(r.reason)) log("update check: " + r.reason);
+    };
+    setTimeout(runUpdate, 90e3);
+    setInterval(runUpdate, 6 * 3600e3);
+  }
 });

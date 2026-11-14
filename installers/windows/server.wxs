@@ -24,6 +24,8 @@
           <Directory Id="ServerDir" Name="server">
             <Component Id="ServerFiles" Guid="16FB4ED9-8379-4089-95B8-CAAB7043FEF2">
               <File Id="ServerJs" Name="server.js" Source="stage/server/server.js" KeyPath="yes" />
+              <File Id="GatewayJs" Name="gateway.js" Source="stage/server/gateway.js" />
+              <File Id="UpdateJs" Name="update.js" Source="stage/server/update.js" />
               <File Id="ProxyJs" Name="proxy.js" Source="stage/server/proxy.js" />
               <File Id="SetupMjs" Name="setup.mjs" Source="stage/server/setup.mjs" />
               <File Id="PkgJson" Name="package.json" Source="stage/server/package.json" />

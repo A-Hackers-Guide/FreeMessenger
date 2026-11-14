@@ -23,7 +23,7 @@ sh repack.sh "$out/FreeMessenger-Messenger-$ver.pkg" build/root
 srv=build/server-root
 lib="$srv/Library/Application Support/FreeMessenger Server"
 mkdir -p "$lib/server" "$lib/relay/src" "$srv/Applications"
-cp "$root/server/server.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install-mac.sh" "$lib/server/"
+cp "$root/server/server.js" "$root/server/gateway.js" "$root/server/update.js" "$root/server/proxy.js" "$root/server/setup.mjs" "$root/server/package.json" "$root/server/package-lock.json" "$root/server/install-mac.sh" "$lib/server/"
 cp "$root/relay/src/shared.js" "$lib/relay/src/"
 printf '#!/bin/sh\n# Sets up the FreeMessenger home relay on this Mac.\nexec sh "/Library/Application Support/FreeMessenger Server/server/install-mac.sh"\n' > "$srv/Applications/FreeMessenger Server Setup.command"
 chmod 755 "$srv/Applications/FreeMessenger Server Setup.command"

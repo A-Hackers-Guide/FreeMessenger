@@ -20,7 +20,7 @@ cf="$(command -v cloudflared || true)"
 base="${FM_HOME:-$HOME/Library/Application Support/FreeMessenger Server}"
 app="$base/app"; data="$base/data"
 mkdir -p "$app/server" "$app/relay/src" "$data"
-cp "$here/server.js" "$here/proxy.js" "$here/setup.mjs" "$here/package.json" "$here/package-lock.json" "$app/server/"
+cp "$here/server.js" "$here/gateway.js" "$here/update.js" "$here/proxy.js" "$here/setup.mjs" "$here/package.json" "$here/package-lock.json" "$app/server/"
 cp "$here/../relay/src/shared.js" "$app/relay/src/"
 printf '{ "type": "module" }\n' > "$app/relay/package.json"
 (cd "$app/server" && npm ci --omit=dev --no-audit --no-fund)
