@@ -15,6 +15,7 @@ import * as Stories from "./stories.js";
 import * as Games from "./games.js";
 import * as Extras from "./extras.js";
 import * as BigFile from "./bigfile.js";
+import * as VR from "./vr.js";
 
 window.FM_LOADED = true;
 
@@ -3259,6 +3260,9 @@ $("history-btn").onclick = downloadHistory;
 $("privacy-ok").onclick = () => { store.set("privacyNotice4", true); closeDialog($("privacy-dialog")); };
 $("peer-avatar").onclick = $("peer-name").onclick = () => active && (isGroup(active) ? openGroupDialog(active) : openProfile(active));
 $("settings-btn").onclick = openSettings;
+$("vr-btn").onclick = () => { $("menu").hidden = true; VR.open(); };
+VR.init({ toast, peer: () => active, me: () => me && me.username });
+VR.autoEnhance();
 $("backup-btn").onclick = downloadBackup;
 $("banner-backup-btn").onclick = downloadBackup;
 $("export-btn").onclick = exportChats;
