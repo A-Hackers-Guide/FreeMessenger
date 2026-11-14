@@ -14,6 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const DEFAULT_REPO = "a-hackers-guide/FreeMessenger";
@@ -31,23 +32,34 @@ const FILES = [
   ["relay/src/shared.js", "relay/src/shared.js"],
 ];
 
+// The newest commit id, from GitHub. When GitHub itself is blocked this throws,
+// and the updater falls back to fetching by branch from a mirror and tracking a
+// content hash instead (see checkAndUpdate), so updates still get through.
 async function latestSha(repo, branch) {
-  const r = await fetch(`https://api.github.com/repos/${repo}/commits/${branch}`, {
-    headers: { "User-Agent": "FreeMessenger-updater", Accept: "application/vnd.github.sha" },
-    signal: AbortSignal.timeout(15000),
-  });
+  const r = await fetch(`https://api.github.com/repos/${repo}/commits/${branch}`, { headers: { "User-Agent": "FreeMessenger-updater", Accept: "application/vnd.github.sha" }, signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error("github " + r.status);
   const sha = (await r.text()).trim();
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("bad sha");
   return sha;
 }
 
-async function fetchFile(repo, sha, p) {
-  const r = await fetch(`https://raw.githubusercontent.com/${repo}/${sha}/${p}`, {
-    headers: { "User-Agent": "FreeMessenger-updater" }, signal: AbortSignal.timeout(20000),
-  });
-  if (!r.ok) throw new Error(`fetch ${p}: ${r.status}`);
-  return Buffer.from(await r.arrayBuffer());
+// The same files on independent networks. raw.githubusercontent is GitHub
+// itself; jsDelivr is a separate global CDN that mirrors public repos, so the
+// code can still update where GitHub's own domains are blocked. `ref` is a
+// commit id (normally) or a branch name (GitHub-blocked fallback).
+const FILE_MIRRORS = [
+  (repo, ref, p) => `https://raw.githubusercontent.com/${repo}/${ref}/${p}`,
+  (repo, ref, p) => `https://cdn.jsdelivr.net/gh/${repo}@${ref}/${p}`,
+];
+
+async function fetchFile(repo, ref, p) {
+  for (const mk of FILE_MIRRORS) {
+    try {
+      const r = await fetch(mk(repo, ref, p), { headers: { "User-Agent": "FreeMessenger-updater" }, signal: AbortSignal.timeout(20000) });
+      if (r.ok) return Buffer.from(await r.arrayBuffer());
+    } catch {}
+  }
+  throw new Error(`fetch ${p}: all mirrors failed`);
 }
 
 // Checks for a newer version and, if there is one, applies it. Returns
@@ -58,16 +70,24 @@ export async function checkAndUpdate({ appDir, dataDir, repo = DEFAULT_REPO, bra
     if (currentSha === undefined) {
       try { currentSha = JSON.parse(fs.readFileSync(verFile, "utf8")).sha; } catch { currentSha = null; }
     }
-    const sha = await latestSha(repo, branch);
-    if (sha === currentSha) return { updated: false, reason: "up to date", sha };
+    // Normally we track the commit id from GitHub. If GitHub is blocked, we
+    // fetch the branch from a mirror instead and track a hash of the code.
+    let sha = null;
+    try { sha = await latestSha(repo, branch); } catch {}
+    if (sha && sha === currentSha) return { updated: false, reason: "up to date", sha };
+    const ref = sha || branch;
 
     // Download everything first; abort on any failure so we never apply a partial set.
     const staged = [];
     for (const [remote, local] of FILES) {
-      const buf = await fetchFile(repo, sha, remote);
+      const buf = await fetchFile(repo, ref, remote);
       if (local.endsWith(".js") && buf.length < 200) return { updated: false, reason: "suspicious tiny file " + remote };
       staged.push([local, buf]);
     }
+    // The version marker: the commit id, or a hash of the files when GitHub was
+    // unreachable (so new code is still noticed on the fallback path).
+    const versionId = sha || "c:" + crypto.createHash("sha256").update(Buffer.concat(staged.map((s) => s[1]))).digest("hex").slice(0, 38);
+    if (versionId === currentSha) return { updated: false, reason: "up to date", sha: versionId };
 
     // Check every .js parses, in a scratch folder, before touching anything live.
     const tmp = path.join(dataDir, ".update-" + Date.now());
@@ -90,7 +110,7 @@ export async function checkAndUpdate({ appDir, dataDir, repo = DEFAULT_REPO, bra
       const dest = path.join(appDir, local);
       try { return !fs.existsSync(dest) || !fs.readFileSync(dest).equals(buf); } catch { return true; }
     });
-    if (!changed) { try { fs.writeFileSync(path.join(dataDir, "version.json"), JSON.stringify({ sha, at: Date.now() })); } catch {} return { updated: false, reason: "already current", sha }; }
+    if (!changed) { try { fs.writeFileSync(verFile, JSON.stringify({ sha: versionId, at: Date.now() })); } catch {} return { updated: false, reason: "already current", sha: versionId }; }
 
     // Swap the files in, keeping the old ones under app/.prev for rollback.
     const prev = path.join(appDir, ".prev");
@@ -107,12 +127,14 @@ export async function checkAndUpdate({ appDir, dataDir, repo = DEFAULT_REPO, bra
 
     // Only reinstall dependencies when the package files actually changed.
     if (pkgChanged) {
-      try { execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(appDir, "server"), stdio: "pipe" }); }
+      // Fixed, constant arguments (no user input), so shell:true is safe here and
+      // is what lets npm.cmd run on Windows.
+      try { execFileSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(appDir, "server"), stdio: "pipe", shell: true }); }
       catch (e) { log("update: npm ci failed (" + e.message + ") — keeping existing packages"); }
     }
 
-    fs.writeFileSync(verFile, JSON.stringify({ sha, at: Date.now() }));
-    return { updated: true, sha, pkgChanged };
+    fs.writeFileSync(verFile, JSON.stringify({ sha: versionId, at: Date.now() }));
+    return { updated: true, sha: versionId, pkgChanged };
   } catch (e) {
     return { updated: false, reason: String(e && e.message || e) };
   }
