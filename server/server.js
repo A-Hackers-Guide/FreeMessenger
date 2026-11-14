@@ -705,8 +705,8 @@ async function op(a, type, msg, sess) {
     const lan = lanIp();
     const visible = (await GW.status(MEDIA))
       .filter((s) => GW.authorize(config, a.username, s.id, admin, grants))
-      .map((s) => ({ id: s.id, name: s.name, icon: s.icon, running: s.running,
-        lan: lan && s.running ? `${s.tls ? "https" : "http"}://${lan}:${s.port}` : null }));
+      .map((s) => ({ id: s.id, name: s.name, note: s.note, running: s.running, web: s.web,
+        lan: lan && s.running ? `${s.tls ? "https" : "http"}://${lan}:${s.port}${s.web || ""}` : null }));
     return { services: visible, owner: admin || a.username === GW.owner(config), admin };
   }
   if (type === "svc-ticket") {

@@ -1,257 +1,140 @@
-// Optional services: Moonlight (gaming), Jellyfin/Plex (media), Audiobookshelf (audio)
-// All run locally, accessed through unified dashboard
+// "My services" — opens the services running on your own computer (Plex,
+// Jellyfin, Audiobookshelf, Sunshine, ...) through the home server.
+//
+// How it reaches a service:
+//   * on your home network, it links straight to the service (full speed), and
+//   * off-site, it goes through the home server's /svc/ gateway.
+// The server decides who may open what: your own services are private to you;
+// you can share one service with one person by name; the site admin can open
+// anyone's, for moderation.
 
-import crypto from "node:crypto";
+import { store } from "./store.js";
+import { openDialog, closeDialog, copyText } from "./compat.js";
+import * as Relays from "./relays.js";
 
-// Stub - will be set by app.js when imported
-const api = globalThis.fm_api || (async () => { throw new Error("API not initialized"); });
+const $ = (id) => document.getElementById(id);
+let ctx = { conn: () => null, toast() {} };
 
-export const Services = {
-  // Service definitions
-  available: {
-    sunshine: {
-      name: "Game Streaming (Sunshine)",
-      description: "Stream games from your PC to any device. Custom build compatible with Moonlight.",
-      icon: "🎮",
-      platforms: ["macos", "windows", "linux"],
-      port: 47989,
-      requiresSetup: true,
-      setupFields: [
-        { name: "nvidia_gpu", label: "Use NVIDIA GPU acceleration?", type: "checkbox", default: true },
-        { name: "bitrate", label: "Stream bitrate (Mbps)", type: "number", default: 50, min: 5, max: 150 }
-      ]
-    },
-    moonlight: {
-      name: "Game Streaming Client",
-      description: "Play games on this computer from anywhere. Works with custom Sunshine or stock GameStream.",
-      icon: "📱",
-      platforms: ["macos", "windows", "linux"],
-      requiresSetup: false
-    },
-    jellyfin: {
-      name: "Jellyfin (Media Server)",
-      description: "Self-hosted streaming for movies, shows, music. Free alternative to Plex.",
-      icon: "🎬",
-      platforms: ["macos", "windows", "linux"],
-      port: 8096,
-      requiresSetup: true,
-      setupFields: [
-        { name: "media_path", label: "Where are your media files?", type: "folder", default: "~/Media" },
-        { name: "transcode", label: "Enable transcoding for old devices?", type: "checkbox", default: true }
-      ]
-    },
-    plex: {
-      name: "Plex Media Server",
-      description: "Centralized home for all your entertainment.",
-      icon: "🎥",
-      platforms: ["macos", "windows", "linux"],
-      port: 32400,
-      requiresSetup: true,
-      setupFields: [
-        { name: "media_path", label: "Where are your media files?", type: "folder", default: "~/Media" }
-      ]
-    },
-    audiobookshelf: {
-      name: "Audiobookshelf",
-      description: "Self-hosted audiobooks and podcasts. Listen anywhere.",
-      icon: "🎧",
-      platforms: ["macos", "windows", "linux"],
-      port: 13378,
-      requiresSetup: true,
-      setupFields: [
-        { name: "audiobooks_path", label: "Where are your audiobooks?", type: "folder", default: "~/Audiobooks" },
-        { name: "podcasts_path", label: "Where are your podcasts?", type: "folder", default: "~/Podcasts" }
-      ]
-    }
-  },
+const ICON = { plex: "🎥", jellyfin: "🎬", emby: "🎬", audiobookshelf: "🎧", navidrome: "🎵", sunshine: "🎮", qbittorrent: "⬇️", homeassistant: "🏠" };
+const icon = (id) => ICON[id] || "🔌";
 
-  // User's installed services
-  installed: {},
-  running: {},
+export function init(c) {
+  ctx = Object.assign(ctx, c || {});
+  const dlg = $("services-dialog");
+  if (dlg) { const close = $("services-close"); if (close) close.onclick = () => closeDialog(dlg); }
+}
 
-  // Initialize services from saved config
-  async init() {
-    try {
-      this.installed = JSON.parse(localStorage.getItem("fm.services") || "{}");
-    } catch (e) {
-      console.error("Failed to load services config:", e);
-      this.installed = {};
-    }
-    await this.checkRunningServices();
-  },
+export async function open() {
+  const dlg = $("services-dialog");
+  if (!dlg) return;
+  openDialog(dlg);
+  await refresh();
+}
 
-  // Check which services are running
-  async checkRunningServices() {
-    for (const [name, config] of Object.entries(this.installed)) {
-      try {
-        const res = await fetch(`http://localhost:${this.available[name].port}/health`, { timeout: 2000 });
-        this.running[name] = res.ok;
-      } catch {
-        this.running[name] = false;
-      }
-    }
-  },
+async function refresh() {
+  const body = $("services-body");
+  if (!body) return;
+  const conn = ctx.conn();
+  if (!conn || !conn.ready) { body.innerHTML = `<p class="fine">You're offline. Connect to open your services.</p>`; return; }
+  body.innerHTML = `<p class="fine">Loading…</p>`;
+  const r = await conn.op("svc-list", {});
+  if (!r || r.error) { body.innerHTML = `<p class="fine">${esc((r && r.error) || "Couldn't load services.")}</p>`; return; }
+  render(r);
+}
 
-  // Start a service
-  async startService(name) {
-    if (!this.installed[name]) return false;
-    try {
-      const res = await fetch(`/api/service/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ service: name })
-      });
-      if (res.ok) {
-        this.running[name] = true;
-        return true;
-      }
-    } catch (e) {
-      console.error(`Failed to start ${name}:`, e);
-    }
-    return false;
-  },
-
-  // Stop a service
-  async stopService(name) {
-    try {
-      const res = await fetch(`/api/service/stop`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ service: name })
-      });
-      if (res.ok) {
-        this.running[name] = false;
-        return true;
-      }
-    } catch (e) {
-      console.error(`Failed to stop ${name}:`, e);
-    }
-    return false;
-  },
-
-  // Uninstall a service
-  async uninstallService(name) {
-    await this.stopService(name);
-    delete this.installed[name];
-    try {
-      localStorage.setItem("fm.services", JSON.stringify(this.installed));
-    } catch (e) {
-      console.error(`Failed to save services config: ${e.message}`);
-      // Restore the service on quota error
-      this.installed[name] = config;
-      throw new Error("Storage quota exceeded");
-    }
-    return true;
-  },
-
-  // Mark service as installed (called by setup GUI)
-  markInstalled(name, config) {
-    this.installed[name] = config;
-    this.running[name] = false;
-    try {
-      localStorage.setItem("fm.services", JSON.stringify(this.installed));
-    } catch (e) {
-      console.error(`Failed to save services config: ${e.message}`);
-      // Remove on storage error
-      delete this.installed[name];
-      throw new Error("Storage quota exceeded");
-    }
+function render(r) {
+  const body = $("services-body");
+  const list = r.services || [];
+  const onPrimary = Relays.onPrimary();
+  if (!list.length) {
+    body.innerHTML = `<p class="fine">No services are shared with you${r.owner ? " yet, and none were found running on your computer" : ""}.</p>`;
+    return;
   }
-};
-
-// Service setup wizard
-export function renderServiceSetup() {
-  const services = Object.entries(Services.available).filter(([_, s]) => !Services.installed[_]);
-
-  if (services.length === 0) {
-    return `<p class="fine">All available services are installed.</p>`;
-  }
-
-  return `
-    <div style="display: grid; gap: 16px;">
-      <h3>Optional Services</h3>
-      <p class="fine">Pick any to install. All integrate with FreeMessenger and start/stop with the app.</p>
-      ${services.map(([name, svc]) => `
-        <div style="border: 1px solid #ddd; padding: 16px; border-radius: 6px;">
-          <div style="display: flex; justify-content: space-between; align-items: start;">
-            <div>
-              <h4>${svc.icon} ${svc.name}</h4>
-              <p class="fine">${svc.description}</p>
-              <p class="fine">Runs on port ${svc.port}</p>
-            </div>
-            <button type="button" class="primary" onclick="Services.showSetupGUI('${name}')">Install</button>
+  body.innerHTML = `
+    ${!onPrimary ? `<p class="fine services-warn">Your home computer looks offline, so off-site opening won't work until it's back. Services on your home network still open directly.</p>` : ""}
+    <div class="services-grid">
+      ${list.map((s) => `
+        <div class="service-card ${s.running ? "up" : "down"}">
+          <div class="service-head"><span class="service-icon">${icon(s.id)}</span>
+            <div><strong>${esc(s.name)}</strong><br><small class="fine">${s.running ? "🟢 running" : "⚪ not running"}</small></div>
           </div>
-        </div>
-      `).join("")}
-    </div>
-  `;
+          ${s.note ? `<p class="fine">${esc(s.note)}</p>` : ""}
+          <div class="service-actions">
+            <button type="button" class="primary small" data-open="${esc(s.id)}" ${s.running ? "" : "disabled"}>Open</button>
+            ${r.owner ? `<button type="button" class="ghost small" data-share="${esc(s.id)}">Share…</button>` : ""}
+          </div>
+          ${r.owner ? `<div class="service-share" id="share-${esc(s.id)}" hidden></div>` : ""}
+        </div>`).join("")}
+    </div>`;
+  body.querySelectorAll("[data-open]").forEach((b) => { b.onclick = () => openService(list.find((s) => s.id === b.getAttribute("data-open"))); });
+  body.querySelectorAll("[data-share]").forEach((b) => { b.onclick = () => toggleShare(b.getAttribute("data-share")); });
 }
 
-// Service setup GUI (opens for each service)
-export function renderServiceSetupGUI(name) {
-  const svc = Services.available[name];
-  if (!svc || !svc.requiresSetup) return "";
-
-  return `
-    <dialog id="service-setup-${name}" style="max-width: 500px;">
-      <h2>${svc.icon} Set up ${svc.name}</h2>
-      <form id="setup-form-${name}">
-        ${svc.setupFields.map(field => `
-          <label style="display: block; margin: 12px 0;">
-            <strong>${field.label}</strong>
-            ${field.type === "checkbox" ? `
-              <input type="checkbox" name="${field.name}" ${field.default ? "checked" : ""} style="margin-left: 8px;">
-            ` : field.type === "folder" ? `
-              <input type="text" name="${field.name}" placeholder="${field.default}" style="width: 100%; margin-top: 4px; padding: 6px; border: 1px solid #ddd; border-radius: 3px;">
-              <small class="fine">Click to browse or type path</small>
-            ` : field.type === "number" ? `
-              <input type="number" name="${field.name}" value="${field.default}" min="${field.min}" max="${field.max}" style="width: 100%; margin-top: 4px; padding: 6px; border: 1px solid #ddd; border-radius: 3px;">
-            ` : ""}
-          </label>
-        `).join("")}
-        <div style="display: flex; gap: 8px; margin-top: 20px;">
-          <button type="button" class="ghost" onclick="document.getElementById('service-setup-${name}').close()">Cancel</button>
-          <button type="submit" class="primary">Install ${svc.name}</button>
-        </div>
-      </form>
-    </dialog>
-  `;
+async function openService(svc) {
+  if (!svc) return;
+  // On the home network: straight to the service, full speed, no tunnel.
+  if (svc.lan && (await reachable(svc.lan))) { window.open(svc.lan, "_blank", "noopener"); return; }
+  // Off-site: through the home server's gateway. Needs the home server online.
+  if (!Relays.onPrimary()) { ctx.toast("Your home computer is offline, so this can only open on your home network right now."); return; }
+  const conn = ctx.conn();
+  const r = conn && conn.ready ? await conn.op("svc-ticket", { service: svc.id }) : { error: "offline" };
+  if (!r || r.error) { ctx.toast((r && r.error) || "Couldn't open that."); return; }
+  const url = `${Relays.get()}/svc/${r.ticket}/${svc.id}${svc.web || "/"}`;
+  window.open(url, "_blank", "noopener");
 }
 
-// Unified dashboard (shows all services)
-export function renderServicesDashboard() {
-  return `
-    <div style="display: grid; gap: 20px;">
-      <h2>🎮 Media & Gaming Center</h2>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
-        ${Object.entries(Services.installed).map(([name, config]) => {
-          const svc = Services.available[name];
-          const running = Services.running[name];
-          return `
-            <div style="border: 1px solid ${running ? "#4ade80" : "#ddd"}; padding: 16px; border-radius: 8px; background: ${running ? "#f0fdf4" : "#fafafa"};">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h3 style="margin: 0;">${svc.icon} ${svc.name}</h3>
-                <button type="button" class="ghost small" onclick="Services.uninstallService('${name}')">Uninstall</button>
-              </div>
-              <p class="fine">${svc.description}</p>
-
-              <div style="margin: 12px 0;">
-                <button type="button" class="${running ? "ghost" : "primary"}" onclick="Services.${running ? "stopService" : "startService"}('${name}')">
-                  ${running ? "🟢 Running" : "🔴 Stopped"}
-                </button>
-                ${running ? `
-                  <a href="http://localhost:${svc.port}" target="_blank" class="ghost small" style="margin-left: 8px;">Open</a>
-                ` : ""}
-              </div>
-            </div>
-          `;
-        }).join("")}
-      </div>
-
-      <div style="border-top: 1px solid #ddd; padding-top: 20px;">
-        ${renderServiceSetup()}
-      </div>
-    </div>
-  `;
+// A quick, silent check that a home-network URL answers (so we only use it when
+// the viewer is actually on that network). Times out fast.
+function reachable(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const img = new Image();
+    const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
+    const t = setTimeout(() => finish(false), 1200);
+    // A reachable host answers *something* (even an error) fast; an unreachable
+    // one hangs until our timeout. We can't read cross-origin, only timing.
+    img.onload = img.onerror = () => { clearTimeout(t); finish(true); };
+    try { img.src = new URL("/favicon.ico?fm=" + Date.now(), url).href; } catch { finish(false); }
+  });
 }
+
+function toggleShare(id) {
+  const box = $("share-" + id);
+  if (!box) return;
+  if (box.hidden) { box.hidden = false; loadShare(id); } else { box.hidden = true; }
+}
+
+async function loadShare(id) {
+  const box = $("share-" + id);
+  if (!box) return;
+  box.innerHTML = `<p class="fine">Loading who has access…</p>`;
+  const conn = ctx.conn();
+  const r = conn && conn.ready ? await conn.op("svc-grants", {}) : { error: "offline" };
+  const grants = (r && r.grants) || {};
+  const shared = Object.keys(grants).filter((u) => (grants[u] || []).includes(id));
+  box.innerHTML = `
+    <form class="share-form">
+      <span>@</span><input class="share-input" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="username">
+      <button type="submit" class="primary small">Give access</button>
+    </form>
+    <p class="fine">Only this one service. They can't see your others.</p>
+    ${shared.length ? `<ul class="share-list">${shared.map((u) => `<li>@${esc(u)} <button type="button" class="link" data-revoke="${esc(u)}">remove</button></li>`).join("")}</ul>` : `<p class="fine">Not shared with anyone yet.</p>`}`;
+  box.querySelector(".share-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const who = box.querySelector(".share-input").value.trim().toLowerCase().replace(/^@/, "");
+    if (!who) return;
+    const g = await conn.op("svc-grant", { service: id, user: who });
+    ctx.toast(g && g.ok ? `Gave @${who} access to ${id}.` : (g && g.error) || "Couldn't share.");
+    if (g && g.ok) loadShare(id);
+  };
+  box.querySelectorAll("[data-revoke]").forEach((b) => {
+    b.onclick = async () => {
+      const who = b.getAttribute("data-revoke");
+      const g = await conn.op("svc-grant", { service: id, user: who, on: false });
+      ctx.toast(g && g.ok ? `Removed @${who}.` : "Couldn't update.");
+      if (g && g.ok) loadShare(id);
+    };
+  });
+}
+
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

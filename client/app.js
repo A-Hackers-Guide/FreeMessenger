@@ -16,6 +16,7 @@ import * as Games from "./games.js";
 import * as Extras from "./extras.js";
 import * as BigFile from "./bigfile.js";
 import * as VR from "./vr.js";
+import * as Services from "./services.js";
 
 window.FM_LOADED = true;
 
@@ -3263,6 +3264,8 @@ $("settings-btn").onclick = openSettings;
 $("vr-btn").onclick = () => { $("menu").hidden = true; VR.open(); };
 VR.init({ toast, peer: () => active, me: () => me && me.username });
 VR.autoEnhance();
+$("services-btn").onclick = () => { $("menu").hidden = true; Services.open(); };
+Services.init({ conn: () => conn, toast });
 $("backup-btn").onclick = downloadBackup;
 $("banner-backup-btn").onclick = downloadBackup;
 $("export-btn").onclick = exportChats;

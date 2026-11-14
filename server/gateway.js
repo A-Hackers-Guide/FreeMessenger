@@ -121,7 +121,7 @@ export function probe(port, timeout = 700) {
 }
 
 export async function status(list) {
-  const out = (list || []).map((s) => ({ id: s.id, name: s.name, port: s.port, icon: s.icon || "🔌", tls: !!s.tls }));
+  const out = (list || []).map((s) => ({ id: s.id, name: s.name, port: s.port, icon: s.icon || "🔌", tls: !!s.tls, web: s.web || "/", note: s.note || "" }));
   await Promise.all(out.map(async (s) => { s.running = await probe(s.port); }));
   return out;
 }
