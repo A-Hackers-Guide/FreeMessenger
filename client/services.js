@@ -22,6 +22,8 @@ export function init(c) {
   ctx = Object.assign(ctx, c || {});
   const dlg = $("services-dialog");
   if (dlg) { const close = $("services-close"); if (close) close.onclick = () => closeDialog(dlg); }
+  const vclose = $("svc-viewer-close");
+  if (vclose) vclose.onclick = closePanel;
 }
 
 export async function open() {
@@ -70,32 +72,33 @@ function render(r) {
   body.querySelectorAll("[data-share]").forEach((b) => { b.onclick = () => toggleShare(b.getAttribute("data-share")); });
 }
 
+// Opens the service INSIDE FreeMessenger, in a panel — not as a bare web link.
+// It always goes through the home server's gateway (which makes the service
+// embeddable), so the home server must be reachable.
 async function openService(svc) {
   if (!svc) return;
-  // On the home network: straight to the service, full speed, no tunnel.
-  if (svc.lan && (await reachable(svc.lan))) { window.open(svc.lan, "_blank", "noopener"); return; }
-  // Off-site: through the home server's gateway. Needs the home server online.
-  if (!Relays.onPrimary()) { ctx.toast("Your home computer is offline, so this can only open on your home network right now."); return; }
+  if (!Relays.onPrimary()) { ctx.toast("Your home computer is offline, so services can only open while it's on."); return; }
   const conn = ctx.conn();
   const r = conn && conn.ready ? await conn.op("svc-ticket", { service: svc.id }) : { error: "offline" };
   if (!r || r.error) { ctx.toast((r && r.error) || "Couldn't open that."); return; }
-  const url = `${Relays.get()}/svc/${r.ticket}/${svc.id}${svc.web || "/"}`;
-  window.open(url, "_blank", "noopener");
+  openInPanel(svc, `${Relays.get()}/svc/${r.ticket}/${svc.id}${svc.web || "/"}`);
 }
 
-// A quick, silent check that a home-network URL answers (so we only use it when
-// the viewer is actually on that network). Times out fast.
-function reachable(url) {
-  return new Promise((resolve) => {
-    let done = false;
-    const img = new Image();
-    const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
-    const t = setTimeout(() => finish(false), 1200);
-    // A reachable host answers *something* (even an error) fast; an unreachable
-    // one hangs until our timeout. We can't read cross-origin, only timing.
-    img.onload = img.onerror = () => { clearTimeout(t); finish(true); };
-    try { img.src = new URL("/favicon.ico?fm=" + Date.now(), url).href; } catch { finish(false); }
-  });
+function openInPanel(svc, url) {
+  const panel = $("svc-viewer"), frame = $("svc-frame");
+  if (!panel || !frame) return;
+  const title = $("svc-viewer-title"); if (title) title.textContent = `${icon(svc.id)} ${svc.name}`;
+  frame.src = url;
+  panel.hidden = false;
+  document.body.classList.add("panel-open");
+  const dlg = $("services-dialog"); if (dlg && dlg.open) closeDialog(dlg);
+}
+
+function closePanel() {
+  const panel = $("svc-viewer"), frame = $("svc-frame");
+  if (frame) frame.src = "about:blank";
+  if (panel) panel.hidden = true;
+  document.body.classList.remove("panel-open");
 }
 
 function toggleShare(id) {
