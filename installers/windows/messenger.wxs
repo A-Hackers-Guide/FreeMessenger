@@ -18,12 +18,12 @@
             <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FreeMessenger"
                       Description="Free texting, voice and video calls"
                       Target="[ProgramFilesFolder]Microsoft\Edge\Application\msedge.exe"
-                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/"
+                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/ --user-data-dir=&quot;[LocalAppDataFolder]FreeMessenger\profile&quot;"
                       Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
             <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="FreeMessenger"
                       Description="Free texting, voice and video calls"
                       Target="[ProgramFilesFolder]Microsoft\Edge\Application\msedge.exe"
-                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/"
+                      Arguments="--app=https://a-hackers-guide.github.io/FreeMessenger/ --user-data-dir=&quot;[LocalAppDataFolder]FreeMessenger\profile&quot;"
                       Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
           </Component>
         </Directory>
