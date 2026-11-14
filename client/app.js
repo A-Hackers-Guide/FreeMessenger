@@ -3323,7 +3323,7 @@ $("privacy-ok").onclick = () => { store.set("privacyNotice4", true); closeDialog
 $("peer-avatar").onclick = $("peer-name").onclick = () => active && (isGroup(active) ? openGroupDialog(active) : openProfile(active));
 $("settings-btn").onclick = openSettings;
 $("vr-btn").onclick = () => { $("menu").hidden = true; VR.open(); };
-VR.init({ toast, peer: () => active, me: () => me && me.username, send: (to, p) => sendPayload(to, Object.assign({ kind: "loft" }, p), true) });
+VR.init({ toast, peer: () => active, me: () => me && me.username, send: (to, p) => sendPayload(to, Object.assign({ kind: "loft" }, p), true), invite: (text) => { if (active) sendText(active, text); } });
 VR.autoEnhance();
 $("services-btn").onclick = () => { $("menu").hidden = true; Services.open(); };
 Services.init({ conn: () => conn, toast });

@@ -672,7 +672,13 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .vr-status { margin: 0; color: var(--muted); font-size: 14px; }
 .vr-section h3 { margin: 0 0 6px; font-size: 15px; }
 .vr-section .fine { margin: 0 0 10px; }
+.vr-entry { display: flex; gap: 8px; flex-wrap: wrap; }
+.vr-entry .primary { flex: 1 1 auto; }
+.vr-pass-btn { background: linear-gradient(135deg, #2b6fff, #14b8c4); }
 .vr-invite { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+/* The blue headset button next to the call buttons, shown only in a headset */
+.vr-call-btn { color: #3a86ff; }
+.vr-call-btn svg { width: 24px; height: 24px; }
 .vr-features { display: grid; gap: 10px; }
 .vr-feature { display: flex; gap: 10px; align-items: start; cursor: pointer; }
 .vr-feature input { margin-top: 3px; width: 18px; height: 18px; }
