@@ -17,6 +17,7 @@ import * as Extras from "./extras.js";
 import * as BigFile from "./bigfile.js";
 import * as VR from "./vr.js";
 import * as Services from "./services.js";
+import * as Powerups from "./powerups.js";
 
 window.FM_LOADED = true;
 
@@ -1121,30 +1122,11 @@ function fillAvatar(el, id) {
 
 // Links in messages open in a new tab; everything else is plain text.
 // People with the web viewer also get a button to open them there.
+// Renders message text: *italic* **bold** ~~strike~~ `code` ||spoiler|| and links.
+// Any formatting error falls back to plain text, so a message never fails to show.
 function linkify(el, text) {
-  const re = /\b(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]])/gi;
-  let last = 0;
-  let match;
-  while ((match = re.exec(text))) {
-    if (match.index > last) el.appendChild(document.createTextNode(text.slice(last, match.index)));
-    const a = document.createElement("a");
-    a.href = match[1];
-    a.textContent = match[1];
-    a.target = "_blank";
-    a.rel = "noopener noreferrer nofollow";
-    el.appendChild(a);
-    if (flags.proxy) {
-      const v = document.createElement("button");
-      v.className = "view-link";
-      v.textContent = "View";
-      v.title = "Open in the web viewer";
-      const url = match[1];
-      v.onclick = (e) => { e.stopPropagation(); Browser.open(url); };
-      el.appendChild(v);
-    }
-    last = match.index + match[1].length;
-  }
-  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  try { Powerups.formatInto(el, text, flags.proxy, Browser.open); }
+  catch { el.appendChild(document.createTextNode(String(text == null ? "" : text))); }
 }
 
 // Built at run time: browsers older than 2020 can't read these patterns, and
@@ -1691,6 +1673,7 @@ function openMessageMenu(id, mid, e) {
     startReply(m.from, m);
   });
   if (m.text) add("Copy text", () => copyText(m.text).then(() => toast("Copied.")));
+  if (m.text && Powerups.canSpeak()) add("🔊 Read aloud", () => Powerups.speak(m.text));
   if (!m.deleted && m.status !== "scheduled") add("Forward", () => openForward(id, m));
   if (m.mine) add("ℹ️ Message info", () => messageInfo(id, m));
   add("⏰ Remind me", () => remindMenu(id, m));
@@ -2507,6 +2490,7 @@ function applySettings() {
   const root = document.documentElement;
   if (settings.theme === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", settings.theme);
   root.setAttribute("data-size", settings.size);
+  root.setAttribute("data-density", settings.density === "compact" ? "compact" : "cozy");
   Look.applyLook(settings.look || {}).then(updateLookPreview);
   if (active) applyChatLook(active);
 }
@@ -2988,6 +2972,7 @@ function openSettings() {
   $("set-enter").checked = settings.enterSends;
   $("set-receipts").checked = settings.readReceipts;
   $("set-typing").checked = settings.typing;
+  $("set-density").checked = settings.density === "compact";
   $("notify-btn").textContent = Push.status();
   fillLookControls();
   fillPrivacyControls();
@@ -3001,10 +2986,11 @@ function saveSettings() {
   settings.enterSends = $("set-enter").checked;
   settings.readReceipts = $("set-receipts").checked;
   settings.typing = $("set-typing").checked;
+  settings.density = $("set-density").checked ? "compact" : "cozy";
   store.set("settings", settings);
   applySettings();
 }
-["set-theme", "set-size", "set-enter", "set-receipts", "set-typing"].forEach((id) => ($(id).onchange = saveSettings));
+["set-theme", "set-size", "set-enter", "set-receipts", "set-typing", "set-density"].forEach((id) => ($(id).onchange = saveSettings));
 $("settings-close").onclick = () => closeDialog($("settings-dialog"));
 
 function exportChats() {
@@ -3322,6 +3308,17 @@ VR.init({ toast, peer: () => active, me: () => me && me.username, send: (to, p) 
 VR.autoEnhance();
 $("services-btn").onclick = () => { $("menu").hidden = true; Services.open(); };
 Services.init({ conn: () => conn, toast });
+// Esc closes the top-most open thing (menu, panel or dialog).
+function closeTop() {
+  const m = $("msg-menu"); if (m && !m.hidden) { hideMessageMenu(); return true; }
+  const mn = $("menu"); if (mn && !mn.hidden) { mn.hidden = true; return true; }
+  const em = $("emoji-panel"); if (em && !em.hidden) { em.hidden = true; return true; }
+  const sv = $("svc-viewer"); if (sv && !sv.hidden) { const c = $("svc-viewer-close"); if (c) c.click(); return true; }
+  const d = document.querySelector("dialog[open]"); if (d) { try { d.close(); } catch {} return true; }
+  return false;
+}
+Powerups.initShortcuts({ closeTop });
+Powerups.initScrollButton();
 $("backup-btn").onclick = downloadBackup;
 $("banner-backup-btn").onclick = downloadBackup;
 $("export-btn").onclick = exportChats;
