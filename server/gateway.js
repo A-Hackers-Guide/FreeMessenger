@@ -62,17 +62,49 @@ export function services(config) {
   return out;
 }
 
-function find(config, id) {
+// server.js passes its own MEDIA list (the single source of truth); each entry
+// is { id, name, port, tls?, icon?, ... }.
+function find(list, id) {
   id = String(id || "").toLowerCase();
-  return services(config).find((s) => s.id === id) || null;
+  return (list || []).find((s) => s.id === id) || null;
 }
 
-// Who may open services: the owner always, plus any username the owner put on
-// config.gatewayShare. `isOwner` is passed in (server.js knows isSuper/admin).
-export function allowed(config, username, isOwner) {
-  if (isOwner) return true;
-  const share = (config && Array.isArray(config.gatewayShare) ? config.gatewayShare : []).map((u) => String(u).toLowerCase());
-  return share.includes(String(username).toLowerCase());
+// The account that owns this computer's services (reaches all of them). The
+// site admin is handled separately and can reach everyone's, for moderation.
+export function owner(config) {
+  return String((config && config.owner) || "").toLowerCase();
+}
+
+// May `username` open service `serviceId`?
+//   - the site admin can open ANY service (moderation);
+//   - the owner can open ALL of their own services;
+//   - anyone else can open ONLY the services granted to them by name.
+// `grants` is { "<username>": ["<serviceId>", ...] }, kept by server.js.
+export function authorize(config, username, serviceId, isAdmin, grants) {
+  username = String(username || "").toLowerCase();
+  if (isAdmin) return true;
+  if (username && username === owner(config)) return true;
+  const mine = grants && grants[username];
+  return Array.isArray(mine) && mine.includes(String(serviceId));
+}
+
+// Pure helpers server.js uses to keep the grant list (then persists it).
+export function grant(grants, username, serviceId) {
+  username = String(username || "").toLowerCase();
+  const g = Object.assign({}, grants);
+  const list = new Set(g[username] || []);
+  list.add(String(serviceId));
+  g[username] = [...list];
+  return g;
+}
+export function revoke(grants, username, serviceId) {
+  username = String(username || "").toLowerCase();
+  const g = Object.assign({}, grants);
+  if (g[username]) {
+    g[username] = g[username].filter((s) => s !== String(serviceId));
+    if (!g[username].length) delete g[username];
+  }
+  return g;
 }
 
 // ---------- discovery ----------
@@ -88,29 +120,31 @@ export function probe(port, timeout = 700) {
   });
 }
 
-export async function status(config) {
-  const list = services(config);
-  await Promise.all(list.map(async (s) => { s.running = await probe(s.port); }));
-  return list;
+export async function status(list) {
+  const out = (list || []).map((s) => ({ id: s.id, name: s.name, port: s.port, icon: s.icon || "🔌", tls: !!s.tls }));
+  await Promise.all(out.map(async (s) => { s.running = await probe(s.port); }));
+  return out;
 }
 
 // ---------- tickets ----------
 
-const tickets = new Map(); // token -> { username, until }
+const tickets = new Map(); // token -> { username, service, until }
 const TICKET_MS = 2 * 3600e3;
 const rnd = () => crypto.randomBytes(20).toString("hex"); // 40 hex chars
 
-export function issueTicket(username) {
+// A ticket is bound to ONE service, so a person granted one service can never
+// use their ticket to reach another.
+export function issueTicket(username, serviceId) {
   for (const [t, v] of tickets) if (v.until < Date.now()) tickets.delete(t);
   const token = rnd();
-  tickets.set(token, { username: String(username), until: Date.now() + TICKET_MS });
+  tickets.set(token, { username: String(username), service: String(serviceId), until: Date.now() + TICKET_MS });
   return token;
 }
 
 export function checkTicket(token) {
   const v = tickets.get(String(token || ""));
   if (!v || v.until < Date.now()) return null;
-  return v.username;
+  return v; // { username, service, until }
 }
 
 // ---------- the reverse proxy ----------
@@ -128,7 +162,7 @@ function cleanHeaders(headers) {
 // `base` is the public path prefix (/svc/<token>/<id>) so redirects can be
 // rewritten to stay inside the gateway.
 export function proxyHttp(req, res, svc, rest, base) {
-  const lib = svc.https ? https : http;
+  const lib = (svc.tls || svc.https) ? https : http;
   const headers = cleanHeaders(req.headers);
   headers.host = "127.0.0.1:" + svc.port;
   delete headers["accept-encoding"]; // let us rewrite redirects without fighting compression
@@ -176,12 +210,15 @@ export function proxyWs(req, socket, head, svc, rest) {
 
 // Parses /svc/<token>/<id>/<rest...> and returns what the caller needs, or an
 // error. Pure; no side effects.
-export function route(pathname, config) {
+export function route(pathname, list) {
   const m = /^\/svc\/([0-9a-f]{40})\/([a-z0-9_-]+)(\/.*|)$/i.exec(pathname);
   if (!m) return { error: "not found", code: 404 };
-  const username = checkTicket(m[1]);
-  if (!username) return { error: "The service link expired. Open it again from FreeMessenger.", code: 403 };
-  const svc = find(config, m[2]);
+  const tk = checkTicket(m[1]);
+  if (!tk) return { error: "The service link expired. Open it again from FreeMessenger.", code: 403 };
+  const id = m[2].toLowerCase();
+  // The ticket is for one service only; it can't be reused for another.
+  if (tk.service !== id) return { error: "This link isn't for that service.", code: 403 };
+  const svc = find(list, id);
   if (!svc) return { error: "No such service.", code: 404 };
-  return { username, svc, rest: m[3] || "/", base: `/svc/${m[1]}/${m[2]}` };
+  return { username: tk.username, svc, rest: m[3] || "/", base: `/svc/${m[1]}/${id}` };
 }

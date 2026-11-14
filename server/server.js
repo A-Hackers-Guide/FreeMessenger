@@ -22,12 +22,16 @@ import { WebSocketServer } from "ws";
 import dgram from "node:dgram";
 import * as S from "../relay/src/shared.js";
 import { proxyPage, proxyResource, proxyAllowed, linkPreview } from "./proxy.js";
+import * as GW from "./gateway.js";
 
 const DATA = path.resolve(process.argv[2] || "data");
 const CONFIG_FILE = path.join(DATA, "config.json");
 const config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
 const PORT = config.port || 8790;
 const ADMINS = (config.admins || []).filter((n) => S.USERNAME.test(n));
+// Who owns this computer's services (can open all of them). Defaults to the
+// site owner; a friend's install sets their own username here.
+if (!config.owner && ADMINS[0]) config.owner = ADMINS[0];
 const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 const CAP_BYTES = (config.capGB || 100) * 1024 ** 3;
 const BACKUP = config.backup || "";
@@ -692,6 +696,40 @@ async function op(a, type, msg, sess) {
     proxyTickets.set(ticket, { username: a.username, until: Date.now() + 2 * 3600e3 });
     return { ticket };
   }
+  // ---------- this computer's own services (Plex, Jellyfin, Sunshine, ...) ----------
+  // Private to the owner by default; the owner can share one service with one
+  // person by name; the site owner (super-admin) can open anyone's, for moderation.
+  if (type === "svc-list") {
+    const admin = isSuper(a);
+    const grants = config.gatewayGrants || {};
+    const lan = lanIp();
+    const visible = (await GW.status(MEDIA))
+      .filter((s) => GW.authorize(config, a.username, s.id, admin, grants))
+      .map((s) => ({ id: s.id, name: s.name, icon: s.icon, running: s.running,
+        lan: lan && s.running ? `${s.tls ? "https" : "http"}://${lan}:${s.port}` : null }));
+    return { services: visible, owner: admin || a.username === GW.owner(config), admin };
+  }
+  if (type === "svc-ticket") {
+    const id = String(msg.service || "").toLowerCase();
+    if (!MEDIA.some((s) => s.id === id)) return { error: "No such service." };
+    if (!GW.authorize(config, a.username, id, isSuper(a), config.gatewayGrants || {})) return { error: "You don't have access to that service." };
+    return { ticket: GW.issueTicket(a.username, id), id };
+  }
+  if (type === "svc-grant") {
+    if (!isSuper(a) && a.username !== GW.owner(config)) return { error: "Only the owner can share services." };
+    const id = String(msg.service || "").toLowerCase();
+    const who = String(msg.user || "").toLowerCase();
+    if (!MEDIA.some((s) => s.id === id)) return { error: "No such service." };
+    if (!S.USERNAME.test(who) || who === a.username) return { error: "Who should get access?" };
+    config.gatewayGrants = (msg.on === false ? GW.revoke : GW.grant)(config.gatewayGrants || {}, who, id);
+    saveConfig();
+    event(`@${a.username} ${msg.on === false ? "removed" : "gave"} @${who} access to the ${id} service`);
+    return { ok: true, grants: config.gatewayGrants };
+  }
+  if (type === "svc-grants") {
+    if (!isSuper(a) && a.username !== GW.owner(config)) return { error: "Only the owner can see this." };
+    return { grants: config.gatewayGrants || {} };
+  }
   if (type === "admin") {
     if (!isAdmin(a)) {
       if (ADMINS.includes(a.username) || grantedAdmins()[a.username]) event(`Refused admin to @${a.username}: the key doesn't match the one that was given admin power`);
@@ -1351,6 +1389,19 @@ const server = http.createServer(async (req, res) => {
       return proxyResource(target, base, res);
     }
 
+    // This computer's own services: /svc/<ticket>/<id>/...  — a full streaming
+    // passthrough to a localhost service, re-checked against the access rules
+    // on every request so a revoked grant stops working at once.
+    if (url.pathname.startsWith("/svc/")) {
+      const r = GW.route(url.pathname, MEDIA);
+      if (r.error) { res.writeHead(r.code, { "Content-Type": "text/plain" }); return res.end(r.error); }
+      const a = getAccount(r.username);
+      if (!a || a.status === "banned" || !GW.authorize(config, r.username, r.svc.id, isSuper(a), config.gatewayGrants || {})) {
+        res.writeHead(403, { "Content-Type": "text/plain" }); return res.end("Your access to this service has ended. Open it again from FreeMessenger.");
+      }
+      return GW.proxyHttp(req, res, r.svc, r.rest + (url.search || ""), r.base);
+    }
+
     if (url.pathname === "/" || url.pathname === "/api") return reply(res, 200, { ok: true, service: "FreeMessenger relay", primary: true });
     return reply(res, 404, { error: "not found" });
   } catch (e) {
@@ -1402,6 +1453,16 @@ async function ensureAccount(name) {
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY });
 server.on("upgrade", async (req, socket, head) => {
+  // A websocket to one of this computer's own services (Plex/Jellyfin live updates).
+  const upPath = new URL(req.url, "http://localhost").pathname;
+  if (upPath.startsWith("/svc/")) {
+    const r = GW.route(upPath, MEDIA);
+    const a = !r.error && getAccount(r.username);
+    if (r.error || !a || a.status === "banned" || !GW.authorize(config, r.username, r.svc.id, isSuper(a), config.gatewayGrants || {})) {
+      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return;
+    }
+    return GW.proxyWs(req, socket, head, r.svc, r.rest);
+  }
   const m = new URL(req.url, "http://localhost").pathname.match(/^\/api\/ws\/([a-z0-9_]{3,20})$/);
   const a = m && (await ensureAccount(m[1]));
   if (!a) { socket.end("HTTP/1.1 404 Not Found\r\n\r\n"); return; }
