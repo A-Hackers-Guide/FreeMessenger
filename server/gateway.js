@@ -177,7 +177,11 @@ function rewriteHtml(html, base) {
   html = html
     .replace(/(\s(?:src|href|action|poster|data-src|data-href)\s*=\s*")\/(?!\/)/gi, `$1${base}/`)
     .replace(/(\s(?:src|href|action|poster|data-src|data-href)\s*=\s*')\/(?!\/)/gi, `$1${base}/`);
-  const shim = `<base href="${base}/"><script>(function(){var B=${JSON.stringify(base)};function fx(u){try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")return B+u;}catch(e){}return u;}var f=window.fetch;if(f)window.fetch=function(u,o){return f(u&&u.url?u:fx(u),o);};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){return xo.apply(this,[m,fx(u)].concat([].slice.call(arguments,2)));};var WS=window.WebSocket;if(WS){var N=function(u,p){if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")u=(location.protocol==="https:"?"wss://":"ws://")+location.host+B+u;return p?new WS(u,p):new WS(u);};N.prototype=WS.prototype;window.WebSocket=N;}}());</script>`;
+  // No <base> tag: relative asset paths must keep resolving against the page's
+  // real URL (…/jellyfin/web/) so a service served under a subpath still finds
+  // its own files. We only rewrite ROOT-absolute URLs (above) and patch the
+  // runtime fetch/XHR/WebSocket calls below.
+  const shim = `<script>(function(){var B=${JSON.stringify(base)};function fx(u){try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")return B+u;}catch(e){}return u;}var f=window.fetch;if(f)window.fetch=function(u,o){return f(u&&u.url?u:fx(u),o);};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){return xo.apply(this,[m,fx(u)].concat([].slice.call(arguments,2)));};var WS=window.WebSocket;if(WS){var N=function(u,p){if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")u=(location.protocol==="https:"?"wss://":"ws://")+location.host+B+u;return p?new WS(u,p):new WS(u);};N.prototype=WS.prototype;window.WebSocket=N;}}());</script>`;
   return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + shim) : shim + html;
 }
 
