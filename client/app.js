@@ -3328,6 +3328,7 @@ VR.init({
   send: (to, p) => sendPayload(to, Object.assign({ kind: "loft" }, p), true),
   invite: (text, to) => { const id = to || active; if (id) sendText(id, text); },
   contacts: () => Object.keys(chats).filter((id) => !isGroup(id) && (chats[id].last || id === active)).map((id) => ({ id, name: chats[id].nickname || id })),
+  avatarOf: (n) => { try { return profileOf(n).avatar || null; } catch { return null; } },
 });
 VR.autoEnhance();
 $("services-btn").onclick = () => { $("menu").hidden = true; Services.open(); };

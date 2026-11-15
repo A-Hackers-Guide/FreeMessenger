@@ -112,6 +112,8 @@ export function init(c) {
   // person in this chat know, so they can tap in — like starting a call.
   const callBtn = $("vr-call-btn");
   if (callBtn) callBtn.onclick = () => callLoft();
+  const winBtn = $("vr-window-btn");
+  if (winBtn) winBtn.onclick = () => openWindow();
 }
 
 // Drop straight into the Loft and notify the chat (no ringing — they tap to join).
@@ -381,6 +383,7 @@ function drawScene(gl, g, viewProj, drawSelf) {
     if (loft.hands.right) drawObj(gl, g, g.cube, mul(viewProj, model(loft.hands.right, null, 0.09)), [0.9, 0.9, 1, 1]);
   }
   if (loft.ball) drawObj(gl, g, g.ball, mul(viewProj, model(loft.ball.p, null, 0.3)), [1, 0.5, 0.35, 1]);
+  if (loft.menuOrb) drawObj(gl, g, g.cube, mul(viewProj, model(loft.menuOrb, [0, 0, 0, 1], 0.06)), [0.3, 0.8, 1, 1]);
 }
 
 // ----- the real environment: a Horizon home scene loaded from a GLB -----
@@ -500,6 +503,7 @@ function drawEnv(gl, prog, viewProj) {
 
 // Kick off the environment download for the current gl context.
 function beginEnv(gl) {
+  loft.quad = buildQuad(gl);
   loft.envProg = buildEnvProgram(gl);
   if (!loft.envProg) return;
   loadEnv(gl, envUrl()).then((e) => {
@@ -507,10 +511,95 @@ function beginEnv(gl) {
   }).catch((e) => console.warn("Loft env:", e && e.message));
 }
 
+// ----- avatars (your account's face) and windows (shared panels) -----
+
+const scaleXYZ = (x, y, z) => new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]);
+function forwardOf(q) { const m = fromQuat(q); return [-m[8], -m[9], -m[10]]; }
+
+function buildQuad(gl) {
+  const pos = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]);
+  const uv = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+  const idx = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  const mk = (arr, el) => { const b = gl.createBuffer(); gl.bindBuffer(el ? gl.ELEMENT_ARRAY_BUFFER : gl.ARRAY_BUFFER, b); gl.bufferData(el ? gl.ELEMENT_ARRAY_BUFFER : gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW); return b; };
+  return { posBuf: mk(pos), uvBuf: mk(uv), idxBuf: mk(idx, true) };
+}
+
+// A texture for a person's face: their account profile picture if we have it,
+// else a coloured tile with their initial. Cached per name for the session.
+function avatarTex(gl, name) {
+  if (!loft.avTex) loft.avTex = {};
+  if (loft.avTex[name]) return loft.avTex[name];
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  const col = hashColor(name).map((c) => Math.round(c * 255));
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([col[0], col[1], col[2], 255]));
+  loft.avTex[name] = t;
+  const url = ctx.avatarOf && ctx.avatarOf(name);
+  const upload = (src) => { try { gl.bindTexture(gl.TEXTURE_2D, t); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); gl.generateMipmap(gl.TEXTURE_2D); } catch {} };
+  if (url) { const img = new Image(); img.onload = () => upload(img); img.src = url; }
+  else {
+    try {
+      const cv = document.createElement("canvas"); cv.width = cv.height = 128;
+      const cx = cv.getContext("2d");
+      cx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`; cx.fillRect(0, 0, 128, 128);
+      cx.fillStyle = "#fff"; cx.font = "bold 74px system-ui,sans-serif"; cx.textAlign = "center"; cx.textBaseline = "middle";
+      cx.fillText((name[0] || "?").toUpperCase(), 64, 70); upload(cv);
+    } catch {}
+  }
+  return t;
+}
+
+function drawQuad(gl, prog, mvp, tex) {
+  if (!loft.quad || !prog || !prog.prog) return;
+  gl.useProgram(prog.prog);
+  gl.enableVertexAttribArray(prog.a_p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, loft.quad.posBuf); gl.vertexAttribPointer(prog.a_p, 3, gl.FLOAT, false, 0, 0);
+  if (prog.a_uv >= 0) { gl.enableVertexAttribArray(prog.a_uv); gl.bindBuffer(gl.ARRAY_BUFFER, loft.quad.uvBuf); gl.vertexAttribPointer(prog.a_uv, 2, gl.FLOAT, false, 0, 0); }
+  gl.uniformMatrix4fv(prog.u_mvp, false, mvp);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(prog.u_tex, 0); gl.uniform1f(prog.u_useTex, 1);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, loft.quad.idxBuf);
+  gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+  if (prog.a_uv >= 0) gl.disableVertexAttribArray(prog.a_uv);
+}
+
+// Each person's face, placed on their head and turned the way they look.
+function drawAvatars(gl, prog, vp) {
+  if (!prog || !loft.quad) return;
+  for (const name of Object.keys(loft.peers)) {
+    const pr = loft.peers[name];
+    const m = mul(mul(mul(mul(translate(pr.head[0], pr.head[1], pr.head[2]), fromQuat(pr.quat || [0, 0, 0, 1])), translate(0, 0, -0.15)), rotY(Math.PI)), scaleXYZ(0.34, 0.34, 1));
+    drawQuad(gl, prog, mul(vp, m), avatarTex(gl, name));
+  }
+}
+
+// Floating windows anyone can open; everyone in the Loft sees them in place.
+function drawWindows(gl, prog, vp) {
+  if (!prog || !loft.quad || !loft.windows) return;
+  for (const id of Object.keys(loft.windows)) {
+    const w = loft.windows[id];
+    const m = mul(mul(translate(w.p[0], w.p[1], w.p[2]), fromQuat(w.q || [0, 0, 0, 1])), scaleXYZ(0.82, 0.62, 1));
+    drawQuad(gl, prog, mul(vp, m), avatarTex(gl, w.owner));
+  }
+}
+
+// Open a window ~1.3 m in front of you, facing you; share it with the room.
+function openWindow() {
+  if (!loft || !loft.localPose) return;
+  const h = loft.localPose, f = forwardOf(h.quat);
+  const p = [h.pos[0] + f[0] * 1.3, Math.max(1.2, h.pos[1]), h.pos[2] + f[2] * 1.3];
+  const q = Array.prototype.slice.call(h.quat);
+  const id = loft.me + ":" + Date.now();
+  loft.windows[id] = { p, q, owner: loft.me };
+  if (ctx.send && loft.target) { try { ctx.send(loft.target, { op: "window", room: loft.room, id, p, q, owner: loft.me }); } catch {} }
+  if (ctx.toast) ctx.toast("Window opened — everyone here can see it.");
+}
+
 // ----- presence + ball sync over the messenger -----
 export function onPeer(from, p) {
   if (!loft || !p || p.room !== loft.room || from === loft.me) return;
   if (p.op === "leave") { delete loft.peers[from]; updatePresence(); return; }
+  if (p.op === "window") { loft.windows[p.id] = { p: p.p, q: p.q, owner: p.owner || from }; return; }
+  if (p.op === "window-del") { delete loft.windows[p.id]; return; }
   if (p.op === "ball") {
     // Someone else owns the ball now (or reports its rest state). Adopt it.
     if (p.held || loft.ballOwner !== loft.me) {
@@ -528,8 +617,14 @@ export function onPeer(from, p) {
       col: prev.col || hashColor(from),
       seen: Date.now(),
     };
-    // Answer a newcomer right away so they see us without waiting for the timer.
-    if (p.op === "join" && ctx.send && loft.localPose) sendPose();
+    // Answer a newcomer right away so they see us (and our windows) at once.
+    if (p.op === "join" && ctx.send && loft.localPose) {
+      sendPose();
+      for (const id of Object.keys(loft.windows || {})) {
+        const w = loft.windows[id];
+        if (w.owner === loft.me) try { ctx.send(loft.target, { op: "window", room: loft.room, id, p: w.p, q: w.q, owner: loft.me }); } catch {}
+      }
+    }
     updatePresence();
   }
 }
@@ -606,6 +701,18 @@ function handleGrab(dt) {
   loft.lastHand = { left: loft.hands.left && loft.hands.left.slice(), right: loft.hands.right && loft.hands.right.slice() };
 }
 
+// A little "＋" orb floats above your left hand; pinch/poke it with your right
+// hand (or controller trigger) to open a window. Works with hand-tracking too.
+function handleMenu() {
+  if (!loft || !loft.hands) { if (loft) loft.menuOrb = null; return; }
+  const lh = loft.hands.left, rh = loft.hands.right;
+  loft.menuOrb = lh ? [lh[0], lh[1] + 0.13, lh[2]] : null;
+  if (loft.menuOrb && rh && loft.selecting.has("right")) {
+    const d = Math.hypot(rh[0] - loft.menuOrb[0], rh[1] - loft.menuOrb[1], rh[2] - loft.menuOrb[2]);
+    if (d < 0.1 && Date.now() - (loft.lastWin || 0) > 900) { loft.lastWin = Date.now(); openWindow(); }
+  }
+}
+
 // ----- entering -----
 async function enterLoft(info, roomPeer, wantPassthrough) {
   const dlg = $("vr-dialog");
@@ -617,6 +724,7 @@ async function enterLoft(info, roomPeer, wantPassthrough) {
     target, room: target || "solo", me: me || "me", mode: "cast", ar: false,
     peers: {}, ball: { p: BALL_START.slice(), v: [0, 0, 0] }, ballOwner: null, ballHeld: false,
     hands: null, selecting: new Set(), lastHand: {}, localPose: null,
+    windows: {}, avTex: {}, quad: null, menuOrb: null, lastWin: 0,
     tint: roomTint(info.kind), yaw: 0, pitch: 0, handlers: [],
   };
   showStage(true, "Entering the Loft…");
@@ -666,23 +774,34 @@ async function enterImmersive(ar) {
     if (ar) gl.clearColor(0, 0, 0, 0); else { const c = loft.tint; gl.clearColor(c[0], c[1], c[2], 1); }
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (!pose) return;
-    // hands
+    // hands — works for both controllers (grip) and hand-tracking (joints)
     const hands = { left: null, right: null };
     for (const src of session.inputSources) {
-      if (!src.gripSpace || !src.handedness) continue;
-      const hp = frame.getPose(src.gripSpace, refSpace);
-      if (hp) hands[src.handedness] = [hp.transform.position.x, hp.transform.position.y, hp.transform.position.z];
+      if (!src.handedness) continue;
+      let pt = null;
+      if (src.hand && frame.getJointPose) {
+        const j = src.hand.get("index-finger-tip") || src.hand.get("wrist");
+        const jp = j && frame.getJointPose(j, refSpace);
+        if (jp) pt = [jp.transform.position.x, jp.transform.position.y, jp.transform.position.z];
+      }
+      if (!pt && src.gripSpace) {
+        const hp = frame.getPose(src.gripSpace, refSpace);
+        if (hp) pt = [hp.transform.position.x, hp.transform.position.y, hp.transform.position.z];
+      }
+      if (pt) hands[src.handedness] = pt;
     }
     loft.hands = hands;
     const p = pose.transform.position, o = pose.transform.orientation;
     loft.localPose = { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w], l: hands.left, r: hands.right };
-    handleGrab(dt); stepBall(dt);
+    handleGrab(dt); stepBall(dt); handleMenu();
     for (const view of pose.views) {
       const vp = glLayer.getViewport(view);
       gl.viewport(vp.x, vp.y, vp.width, vp.height);
       const vpMat = mul(view.projectionMatrix, view.transform.inverse.matrix);
       drawEnv(gl, loft.envProg, vpMat);
       drawScene(gl, g, vpMat, false);
+      drawAvatars(gl, loft.envProg, vpMat);
+      drawWindows(gl, loft.envProg, vpMat);
     }
   };
   loft.raf = session.requestAnimationFrame(onFrame);
@@ -728,6 +847,8 @@ function enterCast() {
     const vpMat = mul(proj, viewM);
     drawEnv(gl, loft.envProg, vpMat);
     drawScene(gl, g, vpMat, false);
+    drawAvatars(gl, loft.envProg, vpMat);
+    drawWindows(gl, loft.envProg, vpMat);
   };
   loft.raf = requestAnimationFrame(tick);
 }
