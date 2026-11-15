@@ -672,6 +672,8 @@ body.shake #app { animation: fx-shake .4s linear 4; }
 .vr-status { margin: 0; color: var(--muted); font-size: 14px; }
 .vr-section h3 { margin: 0 0 6px; font-size: 15px; }
 .vr-section .fine { margin: 0 0 10px; }
+.vr-share-row { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; color: var(--muted); }
+.vr-share-row select { flex: 1; padding: 8px; border-radius: 8px; }
 .vr-entry { display: flex; gap: 8px; flex-wrap: wrap; }
 .vr-entry .primary { flex: 1 1 auto; }
 .vr-pass-btn { background: linear-gradient(135deg, #2b6fff, #14b8c4); }

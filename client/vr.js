@@ -108,9 +108,20 @@ export function init(c) {
   if (dlg) { const close = $("vr-close"); if (close) close.onclick = () => closeDialog(dlg); }
   const stageClose = $("vr-stage-close");
   if (stageClose) stageClose.onclick = exitLoft;
-  // The headset-only button on the chat bar opens the Loft for the current chat.
+  // The headset-only button on the chat bar: drop into the Loft now and let the
+  // person in this chat know, so they can tap in — like starting a call.
   const callBtn = $("vr-call-btn");
-  if (callBtn) callBtn.onclick = () => open(ctx.peer && ctx.peer());
+  if (callBtn) callBtn.onclick = () => callLoft();
+}
+
+// Drop straight into the Loft and notify the chat (no ringing — they tap to join).
+async function callLoft(targetPeer) {
+  let info; try { info = await probe(); } catch { info = detect(); }
+  const target = targetPeer || (ctx.peer && ctx.peer()) || null;
+  if (ctx.invite && target && /^[a-z0-9_]{3,20}$/i.test(target)) {
+    try { ctx.invite("🥽 I'm in the Loft — tap to join me: " + loftLink(target), target); } catch {}
+  }
+  enterLoft(info, target, false);
 }
 
 export async function autoEnhance() {
@@ -143,21 +154,23 @@ function maybeJoinFromLink() {
 
 // ---------- the panel ----------
 
-export async function open(joinRoom) {
+export async function open(joinRoom, ask) {
   const dlg = $("vr-dialog");
   if (!dlg) return;
   const info = await probe();
-  render(info, typeof joinRoom === "string" ? joinRoom : "");
+  render(info, typeof joinRoom === "string" ? joinRoom : "", !!ask);
   openDialog(dlg);
 }
 
-function render(info, joinRoom) {
+function render(info, joinRoom, ask) {
   const body = $("vr-body");
   if (!body) return;
   const avail = FEATURES[info.kind || "generic"] || FEATURES.generic;
   const state = featureState();
   const me = ctx.me && ctx.me();
   const peer = ctx.peer && ctx.peer();
+  // Opened from the menu, offer a "share with" picker; from a chat, default to it.
+  const contacts = (ask && ctx.contacts) ? (ctx.contacts() || []) : [];
   const room = joinRoom || peer || "";
   const link = loftLink(room);
   const named = /^[a-z0-9_]{3,20}$/i.test(room);
@@ -188,10 +201,12 @@ function render(info, joinRoom) {
     <p class="vr-status">${statusLine}</p>
     <div class="vr-section">
       <h3>🏠 The Loft</h3>
-      <p class="fine">A shared room for everyone in this chat. Heads and hands move in real time, and there's a ball to bat around together.</p>
+      <p class="fine">Step into the home environment together — heads and hands move in real time, with a ball to bat around.</p>
+      ${contacts.length ? `<label class="vr-share-row">Share with
+        <select id="vr-share">${contacts.map((c) => `<option value="${esc(c.id)}" ${c.id === peer ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>` : ""}
       <div class="vr-entry">${entryButtons}</div>
       <div class="vr-invite">
-        ${ctx.invite && named ? `<button type="button" class="ghost small" id="vr-invite-chat">💬 Invite to the Loft</button>` : ""}
+        ${ctx.invite ? `<button type="button" class="ghost small" id="vr-invite-chat">💬 Invite without entering</button>` : ""}
         <button type="button" class="ghost small" id="vr-copy">Copy invite link</button>
         <button type="button" class="ghost small" id="vr-apps">Open in a VR app…</button>
       </div>
@@ -207,13 +222,18 @@ function render(info, joinRoom) {
     </div>`;
 
   const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
-  bind("vr-enter", () => enterLoft(info, room, false));
-  bind("vr-enter-pass", () => enterLoft(info, room, true));
-  bind("vr-cast", () => enterLoft(info, room, false));
-  bind("vr-copy", async () => { await copyText(link); ctx.toast("Loft link copied — send it to a friend."); });
+  // The live target is the picked contact, else this chat.
+  const target = () => { const s = $("vr-share"); return (s ? s.value : room) || ""; };
+  const notify = (t) => { if (ctx.invite && /^[a-z0-9_]{3,20}$/i.test(t)) { try { ctx.invite("🥽 I'm in the Loft — tap to join me: " + loftLink(t), t); } catch {} } };
+  const go = (pass) => { const t = target(); notify(t); enterLoft(info, t, pass); };
+  bind("vr-enter", () => go(false));
+  bind("vr-enter-pass", () => go(true));
+  bind("vr-cast", () => go(false));
+  bind("vr-copy", async () => { await copyText(loftLink(target())); ctx.toast("Loft link copied — send it to a friend."); });
   bind("vr-apps", () => { const l = $("vr-apps-list"); if (l) l.hidden = !l.hidden; });
   bind("vr-invite-chat", () => {
-    try { ctx.invite(`🥽 Come hang out in my Loft: ${link}`); ctx.toast("Invite sent."); closeDialog($("vr-dialog")); }
+    const t = target();
+    try { ctx.invite(`🥽 Come hang out in my Loft: ${loftLink(t)}`, t); ctx.toast("Invite sent."); closeDialog($("vr-dialog")); }
     catch { ctx.toast("Couldn't send the invite."); }
   });
   body.querySelectorAll("input[data-feat]").forEach((cb) => {
