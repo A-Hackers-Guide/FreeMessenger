@@ -1,0 +1,13 @@
+{
+  "env": "spacestation",
+  "spawn": [
+    0.0,
+    0.009999999776482582,
+    0.0
+  ],
+  "meshes": 21,
+  "textures": 11,
+  "nodes": 21,
+  "triangles": 295134,
+  "bytes": 16991540
+}

@@ -354,13 +354,137 @@ function drawPerson(gl, g, vp, p) {
 function drawScene(gl, g, viewProj, drawSelf) {
   if (!g || !g.prog) return;
   gl.useProgram(g.prog);
-  if (!loft.ar) drawObj(gl, g, g.grid, viewProj, [0.5, 0.6, 0.85, 1]);
+  if (!loft.ar && !loft.env) drawObj(gl, g, g.grid, viewProj, [0.5, 0.6, 0.85, 1]);
   for (const name of Object.keys(loft.peers)) drawPerson(gl, g, viewProj, loft.peers[name]);
   if (drawSelf && loft.hands) {
     if (loft.hands.left) drawObj(gl, g, g.cube, mul(viewProj, model(loft.hands.left, null, 0.09)), [0.9, 0.9, 1, 1]);
     if (loft.hands.right) drawObj(gl, g, g.cube, mul(viewProj, model(loft.hands.right, null, 0.09)), [0.9, 0.9, 1, 1]);
   }
   if (loft.ball) drawObj(gl, g, g.ball, mul(viewProj, model(loft.ball.p, null, 0.3)), [1, 0.5, 0.35, 1]);
+}
+
+// ----- the real environment: a Horizon home scene loaded from a GLB -----
+//
+// A small in-house GLB reader (no three.js, so the old-browser promise holds).
+// It only needs what our exporter writes: unlit textured triangle meshes with
+// POSITION + TEXCOORD_0, u32 indices, node matrices, and PNG textures. Loaded
+// lazily when you step in, so a plain chat never pays for it.
+
+const ENV_FILE = "loft/spacestation.glb";
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+function envUrl() {
+  try { return new URL(ENV_FILE, location.origin + location.pathname.replace(/[^/]*$/, "")).href; }
+  catch { return ENV_FILE; }
+}
+
+function buildEnvProgram(gl) {
+  const vs = "attribute vec3 p;attribute vec2 uv;uniform mat4 mvp;varying vec2 vUv;void main(){vUv=uv;gl_Position=mvp*vec4(p,1.0);}";
+  const fs = "precision mediump float;varying vec2 vUv;uniform sampler2D tex;uniform float useTex;uniform vec4 base;void main(){gl_FragColor=useTex>0.5?texture2D(tex,vUv):base;}";
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.warn("Env shader:", gl.getShaderInfoLog(s)); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.warn("Env link:", gl.getProgramInfoLog(prog)); return null; }
+  return {
+    prog,
+    a_p: gl.getAttribLocation(prog, "p"),
+    a_uv: gl.getAttribLocation(prog, "uv"),
+    u_mvp: gl.getUniformLocation(prog, "mvp"),
+    u_tex: gl.getUniformLocation(prog, "tex"),
+    u_useTex: gl.getUniformLocation(prog, "useTex"),
+    u_base: gl.getUniformLocation(prog, "base"),
+  };
+}
+
+async function loadEnv(gl, url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("env " + res.status);
+  const buf = await res.arrayBuffer();
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x46546c67) throw new Error("not a GLB");
+  const jlen = dv.getUint32(12, true);
+  const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, jlen)));
+  const binStart = 20 + jlen + 8;
+  const BV = json.bufferViews, AC = json.accessors;
+  const view = (i) => { const v = BV[i]; return { off: binStart + (v.byteOffset || 0), len: v.byteLength }; };
+  const acc = (ai, Ctor, comp) => { const a = AC[ai]; const v = view(a.bufferView); return new Ctor(buf, v.off + (a.byteOffset || 0), a.count * comp); };
+  gl.getExtension("OES_element_index_uint");
+
+  const texCache = {};
+  const makeTex = (imgIndex) => {
+    if (texCache[imgIndex] != null) return texCache[imgIndex];
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([190, 185, 180, 255]));
+    const im = json.images[imgIndex], v = view(im.bufferView);
+    const blob = new Blob([new Uint8Array(buf, v.off, v.len)], { type: im.mimeType || "image/png" });
+    const u = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => {
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      } catch {} URL.revokeObjectURL(u);
+    };
+    img.src = u;
+    texCache[imgIndex] = t;
+    return t;
+  };
+  const mats = (json.materials || []).map((m) => {
+    const pbr = m.pbrMetallicRoughness || {};
+    let tex = null;
+    if (pbr.baseColorTexture) { const src = json.textures[pbr.baseColorTexture.index].source; tex = makeTex(src); }
+    return { tex, base: pbr.baseColorFactor || [1, 1, 1, 1] };
+  });
+
+  const prims = [];
+  (json.nodes || []).forEach((n) => {
+    if (n.mesh == null) return;
+    for (const p of json.meshes[n.mesh].primitives) {
+      const pos = acc(p.attributes.POSITION, Float32Array, 3);
+      const posBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+      let uvBuf = null;
+      if (p.attributes.TEXCOORD_0 != null) { const uv = acc(p.attributes.TEXCOORD_0, Float32Array, 2); uvBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf); gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW); }
+      const idx = acc(p.indices, Uint32Array, 1);
+      const idxBuf = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+      const mat = p.material != null ? mats[p.material] : { tex: null, base: [0.72, 0.7, 0.66, 1] };
+      prims.push({ posBuf, uvBuf, idxBuf, count: idx.length, matrix: new Float32Array(n.matrix || IDENTITY), tex: mat.tex, base: mat.base });
+    }
+  });
+  return { prims };
+}
+
+function drawEnv(gl, prog, viewProj) {
+  if (!loft || !loft.env || !prog || !prog.prog) return;
+  gl.useProgram(prog.prog);
+  gl.enableVertexAttribArray(prog.a_p);
+  for (const pr of loft.env.prims) {
+    gl.uniformMatrix4fv(prog.u_mvp, false, mul(viewProj, pr.matrix));
+    gl.bindBuffer(gl.ARRAY_BUFFER, pr.posBuf);
+    gl.vertexAttribPointer(prog.a_p, 3, gl.FLOAT, false, 0, 0);
+    if (prog.a_uv >= 0) {
+      if (pr.uvBuf) { gl.enableVertexAttribArray(prog.a_uv); gl.bindBuffer(gl.ARRAY_BUFFER, pr.uvBuf); gl.vertexAttribPointer(prog.a_uv, 2, gl.FLOAT, false, 0, 0); }
+      else gl.disableVertexAttribArray(prog.a_uv);
+    }
+    if (pr.tex) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, pr.tex); gl.uniform1i(prog.u_tex, 0); gl.uniform1f(prog.u_useTex, 1); }
+    else { gl.uniform1f(prog.u_useTex, 0); gl.uniform4fv(prog.u_base, pr.base); }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pr.idxBuf);
+    gl.drawElements(gl.TRIANGLES, pr.count, gl.UNSIGNED_INT, 0);
+  }
+  if (prog.a_uv >= 0) gl.disableVertexAttribArray(prog.a_uv);
+}
+
+// Kick off the environment download for the current gl context.
+function beginEnv(gl) {
+  loft.envProg = buildEnvProgram(gl);
+  if (!loft.envProg) return;
+  loadEnv(gl, envUrl()).then((e) => {
+    if (loft) { loft.env = e; const l = $("vr-stage-label"); if (l && loft.mode === "cast") updatePresence(); }
+  }).catch((e) => console.warn("Loft env:", e && e.message));
 }
 
 // ----- presence + ball sync over the messenger -----
@@ -495,13 +619,14 @@ async function enterImmersive(ar) {
   if (gl.makeXRCompatible) { try { await gl.makeXRCompatible(); } catch {} }
   const mode = ar ? "immersive-ar" : "immersive-vr";
   const session = await navigator.xr.requestSession(mode, { optionalFeatures: ["local-floor", "hand-tracking"] });
-  session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+  session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl), depthFar: 20000 });
   let refSpace;
   try { refSpace = await session.requestReferenceSpace("local-floor"); }
   catch { refSpace = await session.requestReferenceSpace("local"); }
   const g = buildScene(gl);
   gl.enable(gl.DEPTH_TEST);
   loft.mode = ar ? "ar" : "xr"; loft.ar = ar; loft.session = session; loft.gl = gl; loft.prog = g; loft.refSpace = refSpace;
+  beginEnv(gl);
   session.addEventListener("end", () => exitLoft());
   // Trigger press/release = grab/throw.
   const which = (e) => (e.inputSource && e.inputSource.handedness === "left") ? "left" : "right";
@@ -535,7 +660,9 @@ async function enterImmersive(ar) {
     for (const view of pose.views) {
       const vp = glLayer.getViewport(view);
       gl.viewport(vp.x, vp.y, vp.width, vp.height);
-      drawScene(gl, g, mul(view.projectionMatrix, view.transform.inverse.matrix), false);
+      const vpMat = mul(view.projectionMatrix, view.transform.inverse.matrix);
+      drawEnv(gl, loft.envProg, vpMat);
+      drawScene(gl, g, vpMat, false);
     }
   };
   loft.raf = session.requestAnimationFrame(onFrame);
@@ -556,6 +683,7 @@ function enterCast() {
   }
   gl.enable(gl.DEPTH_TEST);
   loft.mode = "cast"; loft.gl = gl; loft.prog = g;
+  beginEnv(gl);
   const resize = () => { canvas.width = stage.clientWidth || innerWidth; canvas.height = stage.clientHeight || innerHeight; };
   resize();
   const onMove = (x, y) => { loft.yaw = -x * Math.PI; loft.pitch = Math.max(-1.2, Math.min(1.2, -y * 1.2)); };
@@ -575,9 +703,11 @@ function enterCast() {
     gl.viewport(0, 0, canvas.width, canvas.height);
     const c = loft.tint; gl.clearColor(c[0], c[1], c[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const proj = perspective(1.1, (canvas.width || 1) / (canvas.height || 1), 0.1, 100);
+    const proj = perspective(1.1, (canvas.width || 1) / (canvas.height || 1), 0.1, 20000);
     const viewM = mul(mul(rotX(-loft.pitch), rotY(-loft.yaw)), translate(-EYE[0], -EYE[1], -EYE[2]));
-    drawScene(gl, g, mul(proj, viewM), false);
+    const vpMat = mul(proj, viewM);
+    drawEnv(gl, loft.envProg, vpMat);
+    drawScene(gl, g, vpMat, false);
   };
   loft.raf = requestAnimationFrame(tick);
 }
